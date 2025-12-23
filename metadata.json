@@ -1,0 +1,8 @@
+{
+  "name": "Vasool - SME Cashflow Intelligence",
+  "description": "An AI-powered receivables and cashflow platform for SMEs to automate follow-ups, predict inflows, and manage collections.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

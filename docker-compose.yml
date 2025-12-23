@@ -1,0 +1,36 @@
+
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: vasool_admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: vasool_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./infra/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ./infra/seed.sql:/docker-entrypoint-initdb.d/seed.sql
+
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://vasool_admin:password123@db:5432/vasool_db
+      API_KEY: ${GEMINI_API_KEY}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
