@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../App';
 import { toast } from 'react-hot-toast';
+import { UserRole } from '../../types';
 
 type AuthMode = 'LOGIN' | 'SIGNUP';
 
@@ -56,10 +57,12 @@ const Login: React.FC = () => {
     );
   };
 
-  const setDemoAccount = (email: string) => {
+  const setDemoAccount = (email: string, role?: UserRole) => {
     setFormData({ ...formData, email, password: 'password123' });
-    // Fix: toast.info is not a method in react-hot-toast, using default toast instead
     toast("Demo credentials loaded.");
+    if (role) {
+      login(email, 'password123', role);
+    }
   };
 
   return (
@@ -200,9 +203,12 @@ const Login: React.FC = () => {
           </button>
 
           {mode === 'LOGIN' && (
-            <div className="flex flex-wrap gap-2 pt-2 justify-center">
-               <span onClick={() => setDemoAccount('founder@acme.com')} className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded-md cursor-pointer hover:bg-indigo-50 hover:text-indigo-600 transition-colors border border-transparent hover:border-indigo-100">Owner Demo</span>
-               <span onClick={() => setDemoAccount('admin@vasool.com')} className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded-md cursor-pointer hover:bg-indigo-50 hover:text-indigo-600 transition-colors border border-transparent hover:border-indigo-100">Admin Demo</span>
+            <div className="flex flex-col gap-3 pt-4 border-t border-slate-50">
+               <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">Demo Entry Points</p>
+               <div className="flex flex-wrap gap-2 justify-center">
+                 <button type="button" onClick={() => setDemoAccount('founder@acme.com')} className="text-[10px] font-bold text-slate-400 bg-slate-100 px-3 py-1.5 rounded-md hover:bg-indigo-50 hover:text-indigo-600 transition-colors border border-transparent hover:border-indigo-100">Auditor Login</button>
+                 <button type="button" onClick={() => setDemoAccount('partner@reliance.com', UserRole.CUSTOMER)} className="text-[10px] font-bold text-slate-400 bg-emerald-50 text-emerald-600 px-3 py-1.5 rounded-md hover:bg-emerald-100 transition-colors border border-emerald-200">Customer Access</button>
+               </div>
             </div>
           )}
         </form>

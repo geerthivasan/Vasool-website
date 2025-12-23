@@ -1,10 +1,9 @@
 
 import React, { useState, useRef } from 'react';
 import { useApp } from '../App';
-import { BankTransaction, Invoice } from '../types';
+import { BankTransaction } from '../types';
 import { toast } from 'react-hot-toast';
-import * as XLSX from 'xlsx';
-import { extractInvoiceFromText, fetchMockBankData } from '../services/gemini';
+import { fetchMockBankData } from '../services/gemini';
 
 interface BankOption {
   id: string;
@@ -97,25 +96,25 @@ const Reconciliation: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 pb-20">
+    <div className="space-y-8 animate-in fade-in duration-500 pb-20 px-2 md:px-0">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
         <div>
           <h2 className="text-4xl font-black text-slate-900 tracking-tight">Reconciliation</h2>
           <p className="text-sm text-slate-500 font-medium">Verify payments and clear your ledger automatically.</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 w-full md:w-auto">
           <button 
             onClick={() => fileInputRef.current?.click()}
-            className="bg-white border border-slate-200 text-slate-900 px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-sm hover:bg-slate-50 transition-all"
+            className="flex-1 md:flex-none bg-white border border-slate-200 text-slate-900 px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-sm hover:bg-slate-50 transition-all whitespace-nowrap"
           >
             <i className="fa-solid fa-file-import mr-2 text-indigo-500"></i> Upload Statement
           </button>
           <input type="file" ref={fileInputRef} className="hidden" onChange={handleStatementUpload} />
           <button 
             onClick={() => setShowBankSelector(true)}
-            className="bg-indigo-600 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95"
+            className="flex-1 md:flex-none bg-indigo-600 text-white px-6 py-3 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95 whitespace-nowrap"
           >
-            <i className="fa-solid fa-building-columns mr-2"></i> Connect Bank Feed
+            <i className="fa-solid fa-building-columns mr-2"></i> Connect Bank
           </button>
         </div>
       </div>
@@ -130,9 +129,9 @@ const Reconciliation: React.FC = () => {
             {transactions.length > 0 ? (
                 <div className="divide-y divide-slate-50">
                     {transactions.map(txn => (
-                        <div key={txn.id} className="p-8 hover:bg-slate-50/50 transition-all flex items-center justify-between group">
+                        <div key={txn.id} className="p-6 md:p-8 hover:bg-slate-50/50 transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4 group">
                             <div className="flex items-center gap-6">
-                                <div className={`h-12 w-12 rounded-xl flex items-center justify-center text-lg ${txn.status === 'RECONCILED' ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                                <div className={`h-12 w-12 rounded-xl flex items-center justify-center text-lg shrink-0 ${txn.status === 'RECONCILED' ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
                                     <i className={`fa-solid ${txn.status === 'RECONCILED' ? 'fa-check-double' : 'fa-receipt'}`}></i>
                                 </div>
                                 <div>
@@ -141,23 +140,23 @@ const Reconciliation: React.FC = () => {
                                 </div>
                             </div>
                             
-                            <div className="flex items-center gap-4">
+                            <div className="flex items-center gap-4 w-full md:w-auto justify-end">
                                 {txn.status === 'SUGGESTED' && (
                                     <div className="flex items-center gap-3 animate-in slide-in-from-right-4 duration-500">
-                                        <div className="text-right">
+                                        <div className="text-right hidden sm:block">
                                             <p className="text-[9px] font-black text-indigo-500 uppercase">AI Match Detected</p>
                                             <p className="text-[11px] font-bold text-slate-600 italic">Found ledger candidate</p>
                                         </div>
                                         <button 
                                             onClick={() => reconcile(txn)}
-                                            className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg shadow-indigo-100 hover:scale-105 transition-all"
+                                            className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest shadow-lg shadow-indigo-100 hover:scale-105 transition-all whitespace-nowrap"
                                         >
                                             Clear Entry
                                         </button>
                                     </div>
                                 )}
                                 {txn.status === 'UNMATCHED' && (
-                                    <button className="text-[9px] font-black text-slate-400 uppercase border border-slate-100 px-4 py-2 rounded-lg hover:bg-white transition-all">Manual Match</button>
+                                    <button className="text-[9px] font-black text-slate-400 uppercase border border-slate-100 px-4 py-2 rounded-lg hover:bg-white transition-all whitespace-nowrap">Manual Match</button>
                                 )}
                                 {txn.status === 'RECONCILED' && (
                                     <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest bg-emerald-50 px-4 py-2 rounded-xl">Reconciled</span>
@@ -181,7 +180,7 @@ const Reconciliation: React.FC = () => {
             <div className="bg-slate-900 p-10 rounded-[2.5rem] text-white">
                 <h3 className="text-xl font-black mb-4">Direct Bank Access</h3>
                 <p className="text-slate-400 text-sm leading-relaxed mb-8">Vasool integrates directly with 40+ Indian banks including HDFC, ICICI, and SBI to pull real-time cash inflows.</p>
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                     {majorBanks.slice(0, 4).map(b => (
                         <div key={b.id} className={`h-10 px-3 rounded-lg ${b.color} ${b.textColor} flex items-center justify-center font-bold text-[8px] uppercase tracking-widest border border-white/10`}>
                             {b.name}
@@ -192,7 +191,7 @@ const Reconciliation: React.FC = () => {
             <div className="bg-indigo-600 p-10 rounded-[2.5rem] text-white">
                 <h3 className="text-xl font-black mb-4">AI Statement Engine</h3>
                 <p className="text-indigo-100 text-sm leading-relaxed mb-8">Our proprietary Gemini-based logic reads messy description fields to correctly identify customers even with partial names.</p>
-                <button className="bg-white/10 text-white px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest border border-white/20">Learn More</button>
+                <button className="bg-white/10 text-white px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest border border-white/20 hover:bg-white/20 transition-all">Learn More</button>
             </div>
         </div>
       </div>

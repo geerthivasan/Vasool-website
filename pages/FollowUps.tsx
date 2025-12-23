@@ -4,7 +4,7 @@ import { FollowUp, Customer, EscalationLevel, PaymentPlan, EscalationProtocol, C
 import { toast } from 'react-hot-toast';
 import { useApp } from '../App';
 import { generateReminderAudio, generateReminderText, generatePaymentPlan, analyzeCustomerResponse } from '../services/gemini';
-import { calculateEscalationLevel, getEscalationColor, getEffectiveStatus, getLevelChannel, DEFAULT_PROTOCOL } from '../services/finance';
+import { calculateEscalationLevel, getEscalationColor, getEffectiveStatus, getLevelChannel, calculateDynamicRisk, DEFAULT_PROTOCOL } from '../services/finance';
 
 type FollowUpTab = 'pipeline' | 'activity' | 'matrix';
 
@@ -17,6 +17,11 @@ const FollowUps: React.FC = () => {
   const [showResponseModal, setShowResponseModal] = useState<FollowUp | null>(null);
   const [responseInput, setResponseInput] = useState('');
   
+  // Filtering state
+  const [stageFilter, setStageFilter] = useState<number | 'ALL'>('ALL');
+  const [riskFilter, setRiskFilter] = useState<'ALL' | 'low' | 'medium' | 'high'>('ALL');
+  const [maxAmountFilter, setMaxAmountFilter] = useState<number | null>(null);
+
   // Remind Workflow State
   const [remindTarget, setRemindTarget] = useState<any>(null);
   const [composingChannel, setComposingChannel] = useState<CommChannel | null>(null);
@@ -41,7 +46,7 @@ const FollowUps: React.FC = () => {
     }
   }, [activeTab, escalationProtocol]);
 
-  const suggestedReminders = useMemo(() => {
+  const allSuggestedReminders = useMemo(() => {
     const uniqueNames = Array.from(new Set([
         ...customers.map(c => c.name.toLowerCase()),
         ...invoices.map(i => i.customerName.toLowerCase())
@@ -59,6 +64,16 @@ const FollowUps: React.FC = () => {
 
         const fullCustomer = customers.find(c => c.name.toLowerCase() === nameKey);
         
+        // Calculate max overdue days for dynamic risk matching
+        const maxOverdueDays = customerInvoices.reduce((max, inv) => {
+            const status = getEffectiveStatus(inv);
+            if (status !== 'OVERDUE') return max;
+            const diff = Math.floor((new Date().getTime() - new Date(inv.dueDate).getTime()) / (1000 * 60 * 60 * 24));
+            return diff > max ? diff : max;
+        }, 0);
+
+        const risk = calculateDynamicRisk(overdueAmount, maxOverdueDays, escalationProtocol);
+
         return {
           customer: fullCustomer || {
             id: `virtual-${nameKey}`,
@@ -70,12 +85,27 @@ const FollowUps: React.FC = () => {
           amount: overdueAmount,
           count: customerInvoices.length,
           level: currentLevel,
-          type: channel
+          type: channel,
+          risk: risk
         };
       })
       .filter(Boolean)
       .sort((a, b) => b!.level - a!.level) as any[];
   }, [customers, invoices, escalationProtocol]);
+
+  const filteredSuggestedReminders = useMemo(() => {
+    return allSuggestedReminders.filter(rem => {
+      const matchesStage = stageFilter === 'ALL' || rem.level === stageFilter;
+      const matchesRisk = riskFilter === 'ALL' || rem.risk === riskFilter;
+      const matchesAmount = maxAmountFilter === null || rem.amount <= maxAmountFilter;
+      return matchesStage && matchesRisk && matchesAmount;
+    });
+  }, [allSuggestedReminders, stageFilter, riskFilter, maxAmountFilter]);
+
+  const maxAvailablePipelineAmount = useMemo(() => {
+    if (allSuggestedReminders.length === 0) return 100000;
+    return Math.max(...allSuggestedReminders.map(r => r.amount));
+  }, [allSuggestedReminders]);
 
   const startRemindWorkflow = (rem: any) => {
     setRemindTarget(rem);
@@ -155,6 +185,10 @@ const FollowUps: React.FC = () => {
     generateAiDraft(composingChannel!, contactName);
   };
 
+  const cleanPhone = (phone: string) => {
+    return phone.replace(/[^0-9+]/g, '');
+  };
+
   const finalizeReminder = () => {
     if (!validationDraft || !composingChannel || !remindTarget) return;
 
@@ -162,13 +196,18 @@ const FollowUps: React.FC = () => {
     const destination = recipientContact?.detail || '';
     
     if (composingChannel === 'WHATSAPP') {
-      window.open(`https://wa.me/${destination.replace(/\D/g, '')}?text=${encodedMessage}`, '_blank');
+      const cleanNumber = cleanPhone(destination);
+      window.open(`https://wa.me/${cleanNumber}?text=${encodedMessage}`, '_blank');
     } else if (composingChannel === 'EMAIL') {
-      window.location.href = `mailto:${destination}?subject=Payment Reminder: ${remindTarget.customer.name}&body=${encodedMessage}`;
+      window.location.href = `mailto:${destination}?subject=${encodeURIComponent(`Payment Reminder: ${remindTarget.customer.name}`)}&body=${encodedMessage}`;
     } else if (composingChannel === 'SMS') {
-      window.location.href = `sms:${destination.replace(/\D/g, '')}?body=${encodedMessage}`;
+      const cleanNumber = cleanPhone(destination);
+      // iOS and Android handle SMS bodies differently, but this is the standard standard way
+      const separator = navigator.userAgent.match(/iPhone|iPad|iPod/i) ? '&' : '?';
+      window.location.href = `sms:${cleanNumber}${separator}body=${encodedMessage}`;
     } else if (composingChannel === 'CALL') {
-      window.location.href = `tel:${destination.replace(/\D/g, '')}`;
+      const cleanNumber = cleanPhone(destination);
+      window.location.href = `tel:${cleanNumber}`;
     }
 
     const newLog: FollowUp = {
@@ -283,7 +322,7 @@ const FollowUps: React.FC = () => {
 
   const executeAiSuggestion = (log: FollowUp) => {
     if (!log.aiSuggestedNextStep) return;
-    const rem = suggestedReminders.find(r => r.customer.id === log.customerId);
+    const rem = filteredSuggestedReminders.find(r => r.customer.id === log.customerId);
     if (log.aiSuggestedNextStep.type === 'PLAN' && rem) handleGeneratePlan(rem);
     else if (log.aiSuggestedNextStep.type === 'MESSAGE' && rem) startRemindWorkflow(rem);
     setActivityLog(prev => prev.map(l => l.id === log.id ? { ...l, aiSuggestedNextStep: undefined } : l));
@@ -333,13 +372,13 @@ const FollowUps: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 pb-20">
+    <div className="space-y-8 animate-in fade-in duration-500 pb-20 px-2 md:px-0">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
         <div>
           <h2 className="text-4xl font-black text-slate-900 tracking-tight">Recovery Hub</h2>
           <p className="text-sm text-slate-500 font-medium">Coordinate automated multi-channel follow-ups.</p>
         </div>
-        <div className="flex bg-slate-200/50 p-1.5 rounded-2xl border border-slate-200">
+        <div className="flex bg-slate-200/50 p-1.5 rounded-2xl border border-slate-200 flex-wrap">
           {[
             { id: 'pipeline', label: 'Queue', icon: 'fa-list-ol' },
             { id: 'activity', label: 'History', icon: 'fa-clock-rotate-left' },
@@ -348,8 +387,8 @@ const FollowUps: React.FC = () => {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as FollowUpTab)}
-              className={`flex items-center gap-2 px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                activeTab === tab.id ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'
+              className={`flex-1 md:flex-none flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                activeTab === tab.id ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:bg-slate-50'
               }`}
             >
               <i className={`fa-solid ${tab.icon}`}></i> {tab.label}
@@ -360,13 +399,63 @@ const FollowUps: React.FC = () => {
 
       <div className="grid grid-cols-1 gap-8">
         {activeTab === 'pipeline' && (
-          <div className="animate-in slide-in-from-bottom-4 duration-500 space-y-6">
+          <div className="animate-in slide-in-from-bottom-4 duration-500 space-y-8">
+             
+             {/* Filter Bar for Pipeline */}
+             <div className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-100 shadow-sm grid grid-cols-1 md:grid-cols-3 gap-8 items-end">
+                <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Stage Filter</label>
+                    <div className="flex flex-wrap gap-1 bg-slate-100 p-1 rounded-xl">
+                        {['ALL', 0, 1, 2, 3, 4, 5].map(s => (
+                            <button 
+                                key={s} 
+                                onClick={() => setStageFilter(s as any)}
+                                className={`flex-1 min-w-[32px] py-1.5 text-[9px] font-black uppercase rounded-lg transition-all ${stageFilter === s ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+                            >
+                                {s === 'ALL' ? 'ALL' : `L${s}`}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Risk Profile</label>
+                    <div className="flex gap-1 bg-slate-100 p-1 rounded-xl">
+                        {['ALL', 'low', 'medium', 'high'].map(r => (
+                            <button 
+                                key={r} 
+                                onClick={() => setRiskFilter(r as any)}
+                                className={`flex-1 py-1.5 text-[9px] font-black uppercase rounded-lg transition-all ${riskFilter === r ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+                            >
+                                {r}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="space-y-3">
+                    <div className="flex justify-between items-center ml-1">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Amount Cap</label>
+                        <span className="text-[10px] font-black text-indigo-600">₹{(maxAmountFilter || maxAvailablePipelineAmount).toLocaleString()}</span>
+                    </div>
+                    <input 
+                        type="range" 
+                        min="0" 
+                        max={maxAvailablePipelineAmount} 
+                        step="5000"
+                        value={maxAmountFilter || maxAvailablePipelineAmount}
+                        onChange={(e) => setMaxAmountFilter(Number(e.target.value))}
+                        className="w-full accent-indigo-600 h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer"
+                    />
+                </div>
+             </div>
+
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-               {suggestedReminders.map((rem, i) => (
+               {filteredSuggestedReminders.map((rem, i) => (
                  <div key={i} className={`bg-white p-8 rounded-[2rem] border-2 transition-all hover:shadow-xl ${rem.level >= 4 ? 'border-red-100 shadow-red-50/10' : 'border-slate-100'}`}>
                    <div className="flex justify-between items-start mb-6">
                      <div className="flex items-center gap-4">
-                       <div className={`h-12 w-12 rounded-xl flex items-center justify-center font-black text-white ${getEscalationColor(rem.level)} shadow-lg`}>
+                       <div className={`h-12 w-12 rounded-xl flex items-center justify-center font-black text-white ${getEscalationColor(rem.level)} shadow-lg shrink-0`}>
                          {rem.customer.name.charAt(0)}
                        </div>
                        <div>
@@ -378,7 +467,13 @@ const FollowUps: React.FC = () => {
                         <div className="flex gap-1">
                           {[1,2,3,4,5].map(s => <div key={s} className={`h-1.5 w-3 rounded-full ${s <= rem.level ? getEscalationColor(s as any) : 'bg-slate-100'}`}></div>)}
                         </div>
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter">Stage {rem.level}</span>
+                        <div className="flex items-center gap-1.5">
+                            <span className={`px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-widest ${
+                                rem.risk === 'high' ? 'bg-red-50 text-red-600' :
+                                rem.risk === 'medium' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'
+                            }`}>{rem.risk}</span>
+                            <span className="text-[8px] font-black text-slate-400 uppercase tracking-tighter">Stage {rem.level}</span>
+                        </div>
                      </div>
                    </div>
 
@@ -404,9 +499,13 @@ const FollowUps: React.FC = () => {
                    </button>
                  </div>
                ))}
-               {suggestedReminders.length === 0 && (
+               {filteredSuggestedReminders.length === 0 && (
                  <div className="col-span-full py-24 text-center bg-white rounded-[3rem] border border-dashed border-slate-200">
-                    <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">All Payments Secured</p>
+                    <div className="h-20 w-20 bg-slate-50 rounded-3xl flex items-center justify-center mx-auto mb-6 text-slate-200 text-3xl">
+                        <i className="fa-solid fa-list-check"></i>
+                    </div>
+                    <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">Queue Cleared for these filters</p>
+                    <button onClick={() => { setStageFilter('ALL'); setRiskFilter('ALL'); setMaxAmountFilter(null); }} className="mt-4 text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:underline">Reset Pipeline Filters</button>
                  </div>
                )}
              </div>
@@ -414,36 +513,38 @@ const FollowUps: React.FC = () => {
         )}
 
         {activeTab === 'activity' && (
-          <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
-             <table className="w-full text-left">
-                <thead className="bg-slate-50 text-[9px] font-black uppercase text-slate-400 tracking-widest">
-                  <tr>
-                    <th className="px-8 py-5">Partner & Interaction</th>
-                    <th className="px-8 py-5">AI Status</th>
-                    <th className="px-8 py-5">Stage</th>
-                    <th className="px-8 py-5 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                   {activityLog.map(log => (
-                     <tr key={log.id} className="hover:bg-slate-50/50">
-                        <td className="px-8 py-5">
-                            <p className="font-bold text-sm text-slate-900">{log.customerName}</p>
-                            <p className="text-[10px] text-slate-400 mt-1 max-w-xs truncate">{log.message}</p>
-                        </td>
-                        <td className="px-8 py-5">
-                            {log.aiSuggestedNextStep && (
-                                <button onClick={() => executeAiSuggestion(log)} className="text-[9px] font-black bg-indigo-600 text-white px-3 py-1.5 rounded-lg uppercase shadow-sm">Execute AI Suggestion</button>
-                            )}
-                        </td>
-                        <td className="px-8 py-5"><span className={`px-2 py-0.5 rounded text-[8px] font-black text-white ${getEscalationColor(log.escalationLevel)}`}>L{log.escalationLevel}</span></td>
-                        <td className="px-8 py-5 text-right">
-                            <button onClick={() => setShowResponseModal(log)} className="p-2 text-indigo-500 hover:bg-indigo-50 rounded-lg"><i className="fa-solid fa-reply"></i></button>
-                        </td>
-                     </tr>
-                   ))}
-                </tbody>
-             </table>
+          <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden min-h-[400px]">
+             <div className="overflow-x-auto">
+                 <table className="w-full text-left min-w-[600px]">
+                    <thead className="bg-slate-50 text-[9px] font-black uppercase text-slate-400 tracking-widest">
+                      <tr>
+                        <th className="px-6 md:px-8 py-5">Partner & Interaction</th>
+                        <th className="px-6 md:px-8 py-5">AI Status</th>
+                        <th className="px-6 md:px-8 py-5">Stage</th>
+                        <th className="px-6 md:px-8 py-5 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                       {activityLog.map(log => (
+                         <tr key={log.id} className="hover:bg-slate-50/50">
+                            <td className="px-6 md:px-8 py-5">
+                                <p className="font-bold text-sm text-slate-900">{log.customerName}</p>
+                                <p className="text-[10px] text-slate-400 mt-1 max-w-xs truncate">{log.message}</p>
+                            </td>
+                            <td className="px-6 md:px-8 py-5">
+                                {log.aiSuggestedNextStep && (
+                                    <button onClick={() => executeAiSuggestion(log)} className="text-[9px] font-black bg-indigo-600 text-white px-3 py-1.5 rounded-lg uppercase shadow-sm whitespace-nowrap">Execute AI Suggestion</button>
+                                )}
+                            </td>
+                            <td className="px-6 md:px-8 py-5"><span className={`px-2 py-0.5 rounded text-[8px] font-black text-white ${getEscalationColor(log.escalationLevel)}`}>L{log.escalationLevel}</span></td>
+                            <td className="px-6 md:px-8 py-5 text-right">
+                                <button onClick={() => setShowResponseModal(log)} className="p-2 text-indigo-500 hover:bg-indigo-50 rounded-lg"><i className="fa-solid fa-reply"></i></button>
+                            </td>
+                         </tr>
+                       ))}
+                    </tbody>
+                 </table>
+             </div>
           </div>
         )}
 
@@ -451,7 +552,7 @@ const FollowUps: React.FC = () => {
           <div className="max-w-5xl mx-auto w-full animate-in slide-in-from-bottom-4 duration-500 space-y-12">
             
             {/* Escalation Matrix Section */}
-            <div className="bg-white rounded-[3rem] border border-slate-100 p-12 shadow-sm">
+            <div className="bg-white rounded-[3rem] border border-slate-100 p-8 md:p-12 shadow-sm">
                 <div className="flex justify-between items-start mb-10">
                     <div>
                         <h3 className="text-3xl font-black text-slate-900">Escalation Matrix</h3>
@@ -468,7 +569,7 @@ const FollowUps: React.FC = () => {
                         { id: 4, label: 'Stage 4: Management Escalation', daysKey: 'level4Days', chanKey: 'level4Channel' },
                         { id: 5, label: 'Stage 5: Critical / AI Voice', daysKey: 'level5Days', chanKey: 'level5Channel' },
                     ].map((stage) => (
-                        <div key={stage.id} className="grid grid-cols-1 md:grid-cols-12 gap-8 items-center p-8 bg-slate-50/50 rounded-[2.5rem] border border-slate-100 hover:bg-white hover:shadow-md transition-all">
+                        <div key={stage.id} className="grid grid-cols-1 md:grid-cols-12 gap-6 md:gap-8 items-center p-6 md:p-8 bg-slate-50/50 rounded-[2.5rem] border border-slate-100 hover:bg-white hover:shadow-md transition-all">
                             <div className="md:col-span-3 flex items-center gap-4">
                                 <div className={`h-10 w-10 rounded-xl flex items-center justify-center font-black text-white ${getEscalationColor(stage.id as any)}`}>
                                     {stage.id}
@@ -514,7 +615,7 @@ const FollowUps: React.FC = () => {
             </div>
 
             {/* Risk Assessment Matrix Section */}
-            <div className="bg-white rounded-[3rem] border border-slate-100 p-12 shadow-sm">
+            <div className="bg-white rounded-[3rem] border border-slate-100 p-8 md:p-12 shadow-sm">
                 <div className="mb-10">
                     <h3 className="text-3xl font-black text-slate-900">Risk Matrix</h3>
                     <p className="text-sm text-slate-500 font-medium mt-1">Configure thresholds that categorize partners into risk buckets.</p>
@@ -595,11 +696,11 @@ const FollowUps: React.FC = () => {
         )}
       </div>
 
-      {/* Workflow Modals (Remind, Payment, Audio, etc.) remain fully functional */}
+      {/* Workflow Modals */}
       {remindTarget && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[200] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-300">
-             <div className="p-8 border-b border-slate-100 bg-slate-900 text-white flex justify-between items-center">
+          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-300 max-h-[90vh] overflow-y-auto">
+             <div className="p-8 border-b border-slate-100 bg-slate-900 text-white flex justify-between items-center sticky top-0 z-10">
                 <div>
                   <h3 className="text-2xl font-black">Manual Intervention</h3>
                   <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">
@@ -611,7 +712,7 @@ const FollowUps: React.FC = () => {
                 </button>
              </div>
 
-             <div className="p-10 space-y-8">
+             <div className="p-8 md:p-10 space-y-8">
                 {showContactFix ? (
                   <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-300 text-center">
                     <div className="h-20 w-20 bg-amber-50 rounded-3xl flex items-center justify-center mx-auto text-amber-500 text-3xl">
@@ -645,7 +746,7 @@ const FollowUps: React.FC = () => {
                 ) : !composingChannel ? (
                   <div className="space-y-6">
                     <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest text-center">Select Channel</p>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-2 gap-4">
                        {['WHATSAPP', 'EMAIL', 'SMS', 'CALL'].map(ch => (
                          <button 
                           key={ch}
@@ -685,12 +786,12 @@ const FollowUps: React.FC = () => {
                           onChange={(e) => setValidationDraft(e.target.value)}
                           className="w-full h-48 p-6 bg-slate-50 border border-slate-100 rounded-3xl text-sm font-medium leading-relaxed resize-none focus:ring-4 focus:ring-indigo-100 outline-none"
                         />
-                        <div className="flex gap-4">
+                        <div className="flex flex-col md:flex-row gap-4">
                           <button onClick={() => setRemindTarget(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Discard</button>
                           {composingChannel === 'CALL' ? (
-                            <button onClick={simulateVoiceCall} className="flex-2 px-8 py-4 bg-rose-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl flex items-center justify-center gap-2"><i className="fa-solid fa-robot"></i> Test Script</button>
+                            <button onClick={simulateVoiceCall} className="flex-[2] px-8 py-4 bg-rose-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl flex items-center justify-center gap-2"><i className="fa-solid fa-robot"></i> Test Script</button>
                           ) : (
-                            <button onClick={finalizeReminder} className="flex-2 px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100">Send Now</button>
+                            <button onClick={finalizeReminder} className="flex-[2] px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100">Send Now</button>
                           )}
                         </div>
                       </div>
@@ -704,7 +805,7 @@ const FollowUps: React.FC = () => {
 
       {paymentTarget && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[200] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-md p-10 space-y-8 animate-in zoom-in-95 duration-200">
+          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-md p-8 md:p-10 space-y-8 animate-in zoom-in-95 duration-200">
              <div className="text-center">
                 <div className="h-16 w-16 bg-emerald-50 rounded-3xl flex items-center justify-center mx-auto mb-4"><i className="fa-solid fa-money-check-dollar text-2xl text-emerald-600"></i></div>
                 <h3 className="text-2xl font-black text-slate-900">Record Payment</h3>

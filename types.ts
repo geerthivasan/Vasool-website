@@ -1,7 +1,8 @@
 
 export enum UserRole {
   ADMIN = 'ADMIN',
-  USER = 'USER'
+  USER = 'USER',
+  CUSTOMER = 'CUSTOMER'
 }
 
 // User interface for authenticated session tracking
@@ -70,6 +71,8 @@ export interface Invoice {
   probabilityOfPayment: number;
   manualLogs: ManualLog[];
   escalationLevel: EscalationLevel;
+  disputeStatus?: 'NONE' | 'DISPUTED' | 'RESOLVED';
+  disputeReason?: string;
 }
 
 export interface Customer {

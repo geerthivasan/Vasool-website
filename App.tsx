@@ -9,16 +9,17 @@ import FollowUps from './pages/FollowUps';
 import Reconciliation from './pages/Reconciliation';
 import Settings from './pages/Settings';
 import AdminDashboard from './pages/admin/AdminDashboard';
+import CustomerPortal from './pages/customer/CustomerPortal';
 import Sidebar from './components/layout/Sidebar';
 import MobileNav from './components/layout/MobileNav';
 import { Toaster, toast } from 'react-hot-toast';
 import { DEFAULT_PROTOCOL } from './services/finance';
 
-export type View = 'dashboard' | 'invoices' | 'customers' | 'followups' | 'reconciliation' | 'settings' | 'admin';
+export type View = 'dashboard' | 'invoices' | 'customers' | 'followups' | 'reconciliation' | 'settings' | 'admin' | 'customer_portal';
 
 interface AppContextType {
   user: User | null;
-  login: (email: string, pass: string) => Promise<void>;
+  login: (email: string, pass: string, role?: UserRole) => Promise<void>;
   signup: (userData: { email: string, fullName: string, businessName: string, pass: string }) => Promise<void>;
   logout: () => void;
   currentView: View;
@@ -103,13 +104,13 @@ const App: React.FC = () => {
 
   // Persistent Save to "Database"
   useEffect(() => {
-    if (user) {
+    if (user && user.role !== UserRole.CUSTOMER) {
       localStorage.setItem(`vasool_invoices_${user.id}`, JSON.stringify(invoices));
     }
   }, [invoices, user]);
 
   useEffect(() => {
-    if (user) {
+    if (user && user.role !== UserRole.CUSTOMER) {
       localStorage.setItem(`vasool_customers_${user.id}`, JSON.stringify(customers));
     }
   }, [customers, user]);
@@ -132,19 +133,30 @@ const App: React.FC = () => {
     toast.success("Database cleared and reset.");
   };
 
-  const login = async (email: string, pass: string) => {
+  const login = async (email: string, pass: string, roleOverride?: UserRole) => {
     setIsLoading(true);
     await new Promise(resolve => setTimeout(resolve, 800));
     const userId = btoa(email);
+    
+    let assignedRole = UserRole.USER;
+    if (roleOverride) {
+      assignedRole = roleOverride;
+    } else if (email.includes('admin')) {
+      assignedRole = UserRole.ADMIN;
+    } else if (email.includes('customer') || email.includes('partner')) {
+      assignedRole = UserRole.CUSTOMER;
+    }
+
     const mockUser: User = {
       id: userId,
       email,
-      fullName: email.split('@')[0].charAt(0).toUpperCase() + email.split('@')[0].slice(1),
-      role: email.includes('admin') ? UserRole.ADMIN : UserRole.USER,
-      businessName: 'Acme Solutions',
+      fullName: assignedRole === UserRole.CUSTOMER ? 'Reliance Retail Partner' : email.split('@')[0].charAt(0).toUpperCase() + email.split('@')[0].slice(1),
+      role: assignedRole,
+      businessName: assignedRole === UserRole.CUSTOMER ? 'Reliance Retail' : 'Acme Solutions',
       mfaEnabled: false,
       avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${email}`
     };
+    
     setUser(mockUser);
     localStorage.setItem('vasool_user', JSON.stringify(mockUser));
     setIsLoading(false);
@@ -189,12 +201,13 @@ const App: React.FC = () => {
     return (
       <AppContext.Provider value={{ user, login, signup, logout, currentView, setView, invoices, setInvoices, customers, setCustomers, escalationProtocol, setEscalationProtocol, resetDatabase }}>
         <Login />
-        <Toaster position="top-right" />
+        <Toaster position="top-right" toastOptions={{ style: { borderRadius: '12px', background: '#334155', color: '#fff' } }} />
       </AppContext.Provider>
     );
   }
 
   const renderContent = () => {
+    if (user.role === UserRole.CUSTOMER) return <CustomerPortal />;
     if (user.role === UserRole.ADMIN) return <AdminDashboard />;
     switch (currentView) {
       case 'dashboard': return <Dashboard />;
@@ -210,13 +223,16 @@ const App: React.FC = () => {
   return (
     <AppContext.Provider value={{ user, login, signup, logout, currentView, setView, invoices, setInvoices, customers, setCustomers, escalationProtocol, setEscalationProtocol, resetDatabase }}>
       <div className="flex h-screen bg-slate-50 overflow-hidden">
-        <Sidebar />
+        {user.role !== UserRole.CUSTOMER && <Sidebar />}
+        {/* Adjusted padding: pb-32 for mobile to clear nav, pb-10 for desktop */}
         <main className="flex-1 overflow-y-auto bg-[#F8FAFC]">
-          <div className="max-w-7xl mx-auto px-6 py-10">{renderContent()}</div>
+          <div className={`${user.role === UserRole.CUSTOMER ? '' : 'max-w-7xl mx-auto px-4 py-8 md:px-8 md:py-10 pb-32 md:pb-12'}`}>
+            {renderContent()}
+          </div>
         </main>
-        <div className="md:hidden"><MobileNav /></div>
+        {user.role !== UserRole.CUSTOMER && <div className="md:hidden"><MobileNav /></div>}
       </div>
-      <Toaster position="top-right" />
+      <Toaster position="top-right" toastOptions={{ style: { borderRadius: '12px', background: '#1e293b', color: '#fff', fontSize: '13px', fontWeight: 'bold' } }} />
     </AppContext.Provider>
   );
 };

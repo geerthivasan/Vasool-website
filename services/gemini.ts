@@ -129,7 +129,7 @@ export async function generateReminderAudio(customerName: string, amount: number
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text: speechText }] }],
       config: {
-        responseModalalities: [Modality.AUDIO],
+        responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
             prebuiltVoiceConfig: { voiceName: tone === 'firm' ? 'Puck' : 'Kore' },
@@ -173,26 +173,20 @@ export async function getCashflowInsights(invoices: Invoice[]): Promise<AIInsigh
 
 export async function extractInvoiceFromText(textData: string): Promise<Partial<Invoice>[]> {
   try {
-    const prompt = `Act as a senior accounting auditor. Extract a clean list of invoices from the following JSON data which represents an exported spreadsheet. 
-    Intelligently map column headers to these fields: 
-    - customerName (Client, Customer, Entity, Name)
-    - amount (Total, Grand Total, BCY_Total, Bill Amount)
-    - balance (Outstanding, Due Amount, Balance, BCY_Balance)
-    - dueDate (Due Date, Payment Date, Expires On)
-    - status (Status, Payment Status)
-    - isEmailed (Sent, Emailed, Published)
-
+    const extractionPrompt = `Act as a senior accounting auditor. Extract a clean list of EVERY SINGLE valid invoice from the provided data.
+    Intelligently map column headers to: customerName, amount, balance, dueDate, status, isEmailed.
+    
     Data to process: ${textData}
-
-    Rules:
-    1. Only include valid financial records.
-    2. Convert all dates to YYYY-MM-DD format.
-    3. If balance is missing, assume it equals the amount.
+    
+    CRITICAL: 
+    1. You MUST process and return every valid row provided in the input. Do not summarize.
+    2. Convert all dates to YYYY-MM-DD.
+    3. Ensure balance equals amount if balance is missing.
     4. Default currency is INR.`;
 
-    const response = await ai.models.generateContent({
+    const finalResponse = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: prompt,
+      contents: extractionPrompt,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -212,7 +206,8 @@ export async function extractInvoiceFromText(textData: string): Promise<Partial<
         }
       }
     });
-    return JSON.parse(response.text || "[]");
+
+    return JSON.parse(finalResponse.text || "[]");
   } catch (error) {
     console.error("AI Extraction Error:", error);
     return [];

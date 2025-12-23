@@ -12,6 +12,11 @@ const Customers: React.FC = () => {
   const [showLogModal, setShowLogModal] = useState<Customer | null>(null);
   const [logNote, setLogNote] = useState('');
 
+  // Filtering state
+  const [stageFilter, setStageFilter] = useState<number | 'ALL'>('ALL');
+  const [riskFilter, setRiskFilter] = useState<'ALL' | 'low' | 'medium' | 'high'>('ALL');
+  const [maxAmountFilter, setMaxAmountFilter] = useState<number | null>(null);
+
   // Group invoices by customer name and consolidate data to fix duplicate tiles
   const augmentedCustomers = useMemo(() => {
     // 1. Identify all unique customer names across CRM and Invoices
@@ -20,7 +25,7 @@ const Customers: React.FC = () => {
       ...invoices.map(i => i.customerName.toLowerCase())
     ]));
 
-    return uniqueNames.map(nameKey => {
+    const allAugmented = uniqueNames.map(nameKey => {
       // Find base CRM record or create a virtual one
       const baseRecord = customers.find(c => c.name.toLowerCase() === nameKey) || {
         id: `virtual-${nameKey}`,
@@ -64,7 +69,28 @@ const Customers: React.FC = () => {
         riskLevel: dynamicRisk 
       };
     });
-  }, [customers, invoices, escalationProtocol]);
+
+    // Apply Filters
+    return allAugmented.filter(cust => {
+      const matchesStage = stageFilter === 'ALL' || cust.currentEscalation === stageFilter;
+      const matchesRisk = riskFilter === 'ALL' || cust.riskLevel === riskFilter;
+      const matchesAmount = maxAmountFilter === null || cust.totalOutstanding <= maxAmountFilter;
+      return matchesStage && matchesRisk && matchesAmount;
+    });
+  }, [customers, invoices, escalationProtocol, stageFilter, riskFilter, maxAmountFilter]);
+
+  const maxAvailableOutstanding = useMemo(() => {
+    // Re-calculate all outstanding to find max for slider
+    const uniqueNames = Array.from(new Set([
+        ...customers.map(c => c.name.toLowerCase()),
+        ...invoices.map(i => i.customerName.toLowerCase())
+    ]));
+    const outstandings = uniqueNames.map(nameKey => {
+      return invoices.filter(inv => inv.customerName.toLowerCase() === nameKey && getEffectiveStatus(inv) !== 'PAID')
+                    .reduce((sum, inv) => sum + inv.amount, 0);
+    });
+    return outstandings.length > 0 ? Math.max(...outstandings) : 100000;
+  }, [customers, invoices]);
 
   const handleEditCustomerSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -111,15 +137,64 @@ const Customers: React.FC = () => {
   };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 pb-20">
+    <div className="space-y-8 animate-in fade-in duration-500 pb-20 px-2 md:px-0">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
         <div>
-          <h2 className="text-4xl font-black text-slate-900 tracking-tight">Partner Hub</h2>
-          <p className="text-sm text-slate-500 font-medium">Managing {augmentedCustomers.length} unique business relationships.</p>
+          <h2 className="text-3xl md:text-4xl font-black text-slate-900 tracking-tight">Partner Hub</h2>
+          <p className="text-sm text-slate-500 font-medium">Managing business relationships.</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+      {/* Filter Section */}
+      <div className="bg-white p-6 md:p-8 rounded-[2rem] border border-slate-100 shadow-sm grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="space-y-2">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Stage Filter</label>
+            <div className="flex flex-wrap gap-1 bg-slate-100 p-1 rounded-xl">
+                {['ALL', 0, 1, 2, 3, 4, 5].map(s => (
+                    <button 
+                        key={s} 
+                        onClick={() => setStageFilter(s as any)}
+                        className={`flex-1 min-w-[32px] py-2 text-[9px] font-black uppercase rounded-lg transition-all ${stageFilter === s ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+                    >
+                        {s === 'ALL' ? 'ALL' : `L${s}`}
+                    </button>
+                ))}
+            </div>
+        </div>
+
+        <div className="space-y-2">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Risk Filter</label>
+            <div className="flex gap-1 bg-slate-100 p-1 rounded-xl">
+                {['ALL', 'low', 'medium', 'high'].map(r => (
+                    <button 
+                        key={r} 
+                        onClick={() => setRiskFilter(r as any)}
+                        className={`flex-1 py-2 text-[9px] font-black uppercase rounded-lg transition-all ${riskFilter === r ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500'}`}
+                    >
+                        {r}
+                    </button>
+                ))}
+            </div>
+        </div>
+
+        <div className="space-y-3">
+            <div className="flex justify-between items-center ml-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Outstanding Cap</label>
+                <span className="text-[10px] font-black text-indigo-600">₹{(maxAmountFilter || maxAvailableOutstanding).toLocaleString()}</span>
+            </div>
+            <input 
+                type="range" 
+                min="0" 
+                max={maxAvailableOutstanding} 
+                step="5000"
+                value={maxAmountFilter || maxAvailableOutstanding}
+                onChange={(e) => setMaxAmountFilter(Number(e.target.value))}
+                className="w-full accent-indigo-600 h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer"
+            />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 md:gap-8">
         {augmentedCustomers.map(cust => (
           <div key={cust.id} className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl transition-all group relative overflow-hidden">
             <div className="absolute top-4 right-4">
@@ -132,7 +207,7 @@ const Customers: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-4 mb-8">
-              <div className="h-12 w-12 rounded-xl bg-slate-900 text-white flex items-center justify-center font-black text-xl shadow-lg">
+              <div className="h-12 w-12 rounded-xl bg-slate-900 text-white flex items-center justify-center font-black text-xl shadow-lg shrink-0">
                 {cust.name.charAt(0)}
               </div>
               <div className="overflow-hidden">
@@ -178,15 +253,19 @@ const Customers: React.FC = () => {
         ))}
         {augmentedCustomers.length === 0 && (
           <div className="col-span-full py-24 text-center bg-white rounded-[3rem] border border-dashed border-slate-200">
-            <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">No partners in database</p>
+            <div className="h-20 w-20 bg-slate-50 rounded-3xl flex items-center justify-center mx-auto mb-6 text-slate-200 text-3xl">
+                <i className="fa-solid fa-users-slash"></i>
+            </div>
+            <p className="text-slate-400 font-black uppercase tracking-widest text-xs">No partners match your current filters</p>
+            <button onClick={() => { setStageFilter('ALL'); setRiskFilter('ALL'); setMaxAmountFilter(null); }} className="mt-4 text-[10px] font-black text-indigo-600 uppercase tracking-widest hover:underline">Clear all filters</button>
           </div>
         )}
       </div>
 
       {editingCustomer && (
         <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[200] flex items-center justify-center p-4">
-          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-            <div className="p-8 border-b border-slate-100 bg-slate-900 text-white flex justify-between items-center">
+          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-2xl overflow-y-auto max-h-[90vh] animate-in zoom-in-95 duration-300">
+            <div className="p-8 border-b border-slate-100 bg-slate-900 text-white flex justify-between items-center sticky top-0 z-10">
               <div>
                 <h3 className="text-2xl font-black">Contact Management</h3>
                 <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Configuring {editingCustomer.name}</p>
@@ -194,7 +273,7 @@ const Customers: React.FC = () => {
               <button onClick={() => setEditingCustomer(null)} className="text-slate-400 hover:text-white transition-colors"><i className="fa-solid fa-xmark text-2xl"></i></button>
             </div>
             
-            <form onSubmit={handleEditCustomerSubmit} className="p-10 space-y-10">
+            <form onSubmit={handleEditCustomerSubmit} className="p-8 md:p-10 space-y-10">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                   <div className="space-y-2">
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Partner Legal Entity</label>
@@ -211,7 +290,7 @@ const Customers: React.FC = () => {
                   </div>
               </div>
 
-              <div className="border border-slate-100 rounded-[2.5rem] p-8 space-y-8 bg-slate-50/50">
+              <div className="border border-slate-100 rounded-[2.5rem] p-6 md:p-8 space-y-8 bg-slate-50/50">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                   <div className="flex flex-col">
                     <h4 className="text-[11px] font-black text-slate-900 uppercase tracking-widest">Escalation Phase Contacts</h4>
@@ -223,7 +302,7 @@ const Customers: React.FC = () => {
                       <i className="fa-solid fa-arrows-rotate"></i> Bulk sync current contact to all levels
                     </button>
                   </div>
-                  <div className="flex gap-1.5 p-1.5 bg-white border border-slate-100 rounded-xl shadow-sm">
+                  <div className="flex flex-wrap gap-1.5 p-1.5 bg-white border border-slate-100 rounded-xl shadow-sm">
                     {[1,2,3,4,5].map(lvl => (
                       <button 
                         key={lvl}
@@ -271,7 +350,7 @@ const Customers: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex gap-4">
+              <div className="flex flex-col md:flex-row gap-4">
                   <button type="button" onClick={() => setEditingCustomer(null)} className="flex-1 py-5 bg-slate-100 text-slate-500 rounded-[1.5rem] font-black text-xs uppercase tracking-widest border border-slate-200">Discard Changes</button>
                   <button type="submit" className="flex-[2] py-5 bg-indigo-600 text-white rounded-[1.5rem] font-black text-xs uppercase tracking-[0.2em] shadow-2xl shadow-indigo-100 hover:bg-indigo-700 transition-all">
                     Commit Updates
