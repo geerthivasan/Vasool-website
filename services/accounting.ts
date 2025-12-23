@@ -44,29 +44,40 @@ export const PROVIDERS: ProviderConfig[] = [
 ];
 
 /**
- * Simulates a connection process without refreshing the page.
- * In a real app, this would handle the OAuth handshake.
+ * Simulates a successful OAuth handshake completion.
  */
 export const connectProvider = async (providerId: AccountingProvider): Promise<boolean> => {
-  // Simulate network latency for "Authentication"
-  await new Promise(resolve => setTimeout(resolve, 1500));
+  // Simulate the token exchange and profile fetching
+  await new Promise(resolve => setTimeout(resolve, 1000));
   
-  // Store a mock token to represent a "Connected" state
-  localStorage.setItem(`${providerId.toLowerCase()}_access_token`, `mock_token_${Date.now()}`);
+  // Store a mock token with metadata
+  const sessionData = {
+    accessToken: `auth_v2_tk_${Math.random().toString(36).substring(7)}`,
+    connectedAt: new Date().toISOString(),
+    scopes: ['read_all', 'write_logs', 'partner_sync']
+  };
+  
+  localStorage.setItem(`vasool_oauth_${providerId.toLowerCase()}`, JSON.stringify(sessionData));
   return true;
 };
 
 /**
- * Fetches realistic data using Gemini to simulate a live API response.
+ * Fetches realistic data using Gemini to simulate a live API response from a connected cloud source.
  */
 export const syncProviderData = async (providerId: AccountingProvider): Promise<Partial<Invoice>[]> => {
+  // Check if session exists (simulating token validation)
+  if (!isProviderConnected(providerId)) {
+    throw new Error("UNAUTHORIZED: No active OAuth session found for " + providerId);
+  }
+  
+  // High fidelity mock data pull
   return await fetchMockAccountingData(providerId);
 };
 
 export const isProviderConnected = (providerId: AccountingProvider): boolean => {
-  return !!localStorage.getItem(`${providerId.toLowerCase()}_access_token`);
+  return !!localStorage.getItem(`vasool_oauth_${providerId.toLowerCase()}`);
 };
 
 export const disconnectProvider = (providerId: AccountingProvider) => {
-  localStorage.removeItem(`${providerId.toLowerCase()}_access_token`);
+  localStorage.removeItem(`vasool_oauth_${providerId.toLowerCase()}`);
 };

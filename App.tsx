@@ -29,6 +29,7 @@ interface AppContextType {
   setCustomers: React.Dispatch<React.SetStateAction<Customer[]>>;
   escalationProtocol: EscalationProtocol;
   setEscalationProtocol: (p: EscalationProtocol) => void;
+  resetDatabase: () => void;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -48,24 +49,59 @@ const App: React.FC = () => {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [escalationProtocol, setEscalationProtocolState] = useState<EscalationProtocol>(DEFAULT_PROTOCOL);
 
+  // Initial Load from "Database" (LocalStorage)
   useEffect(() => {
     const savedUser = localStorage.getItem('vasool_user');
     if (savedUser) {
       const parsedUser = JSON.parse(savedUser);
       setUser(parsedUser);
       
-      const savedInvoices = localStorage.getItem(`vasool_invoices_${parsedUser.id}`);
-      if (savedInvoices) setInvoices(JSON.parse(savedInvoices));
-      
-      const savedCustomers = localStorage.getItem(`vasool_customers_${parsedUser.id}`);
-      if (savedCustomers) setCustomers(JSON.parse(savedCustomers));
+      const userId = parsedUser.id;
+      const savedInvoices = localStorage.getItem(`vasool_invoices_${userId}`);
+      const savedCustomers = localStorage.getItem(`vasool_customers_${userId}`);
+      const savedProtocol = localStorage.getItem(`vasool_protocol_${userId}`);
 
-      const savedProtocol = localStorage.getItem(`vasool_protocol_${parsedUser.id}`);
+      if (savedInvoices) setInvoices(JSON.parse(savedInvoices));
+      if (savedCustomers) setCustomers(JSON.parse(savedCustomers));
       if (savedProtocol) setEscalationProtocolState(JSON.parse(savedProtocol));
+      
+      // Seed data if database is empty for a better "Fully Functional" experience
+      if (!savedInvoices || JSON.parse(savedInvoices).length === 0) {
+        const seedInvoices: Invoice[] = [
+          {
+            id: 'INV-1001',
+            customerName: 'Airtel Business',
+            amount: 75000,
+            balance: 75000,
+            currency: 'INR',
+            dueDate: '2025-10-15',
+            status: 'PENDING',
+            isEmailed: true,
+            probabilityOfPayment: 0.9,
+            manualLogs: [],
+            escalationLevel: 0
+          },
+          {
+            id: 'INV-1002',
+            customerName: 'Reliance Retail',
+            amount: 125000,
+            balance: 50000,
+            currency: 'INR',
+            dueDate: '2025-10-20',
+            status: 'PENDING',
+            isEmailed: true,
+            probabilityOfPayment: 0.7,
+            manualLogs: [],
+            escalationLevel: 0
+          }
+        ];
+        setInvoices(seedInvoices);
+      }
     }
     setIsLoading(false);
   }, []);
 
+  // Persistent Save to "Database"
   useEffect(() => {
     if (user) {
       localStorage.setItem(`vasool_invoices_${user.id}`, JSON.stringify(invoices));
@@ -85,16 +121,27 @@ const App: React.FC = () => {
     }
   };
 
+  const resetDatabase = () => {
+    if (!user) return;
+    setInvoices([]);
+    setCustomers([]);
+    setEscalationProtocolState(DEFAULT_PROTOCOL);
+    localStorage.removeItem(`vasool_invoices_${user.id}`);
+    localStorage.removeItem(`vasool_customers_${user.id}`);
+    localStorage.removeItem(`vasool_protocol_${user.id}`);
+    toast.success("Database cleared and reset.");
+  };
+
   const login = async (email: string, pass: string) => {
     setIsLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => setTimeout(resolve, 800));
     const userId = btoa(email);
     const mockUser: User = {
       id: userId,
       email,
       fullName: email.split('@')[0].charAt(0).toUpperCase() + email.split('@')[0].slice(1),
       role: email.includes('admin') ? UserRole.ADMIN : UserRole.USER,
-      businessName: 'Acme Corp',
+      businessName: 'Acme Solutions',
       mfaEnabled: false,
       avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${email}`
     };
@@ -105,7 +152,7 @@ const App: React.FC = () => {
 
   const signup = async (data: { email: string, fullName: string, businessName: string, pass: string }) => {
     setIsLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 1000));
     const userId = btoa(data.email);
     const newUser: User = {
       id: userId,
@@ -129,11 +176,18 @@ const App: React.FC = () => {
 
   const setView = (view: View) => setCurrentView(view);
 
-  if (isLoading) return <div className="h-screen flex items-center justify-center">Loading...</div>;
+  if (isLoading) return (
+    <div className="h-screen flex flex-col items-center justify-center bg-slate-50 space-y-4">
+      <div className="h-16 w-16 bg-indigo-600 rounded-2xl flex items-center justify-center animate-bounce shadow-2xl shadow-indigo-100">
+        <i className="fa-solid fa-bolt-lightning text-white text-2xl"></i>
+      </div>
+      <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em] animate-pulse">Initializing Data Core</p>
+    </div>
+  );
 
   if (!user) {
     return (
-      <AppContext.Provider value={{ user, login, signup, logout, currentView, setView, invoices, setInvoices, customers, setCustomers, escalationProtocol, setEscalationProtocol }}>
+      <AppContext.Provider value={{ user, login, signup, logout, currentView, setView, invoices, setInvoices, customers, setCustomers, escalationProtocol, setEscalationProtocol, resetDatabase }}>
         <Login />
         <Toaster position="top-right" />
       </AppContext.Provider>
@@ -154,11 +208,11 @@ const App: React.FC = () => {
   };
 
   return (
-    <AppContext.Provider value={{ user, login, signup, logout, currentView, setView, invoices, setInvoices, customers, setCustomers, escalationProtocol, setEscalationProtocol }}>
+    <AppContext.Provider value={{ user, login, signup, logout, currentView, setView, invoices, setInvoices, customers, setCustomers, escalationProtocol, setEscalationProtocol, resetDatabase }}>
       <div className="flex h-screen bg-slate-50 overflow-hidden">
         <Sidebar />
-        <main className="flex-1 overflow-y-auto">
-          <div className="max-w-7xl mx-auto px-4 py-10">{renderContent()}</div>
+        <main className="flex-1 overflow-y-auto bg-[#F8FAFC]">
+          <div className="max-w-7xl mx-auto px-6 py-10">{renderContent()}</div>
         </main>
         <div className="md:hidden"><MobileNav /></div>
       </div>

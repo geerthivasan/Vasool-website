@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type, Modality } from "@google/genai";
-import { Invoice, AIInsight, Customer, PaymentPlan, FollowUp } from "../types";
+import { Invoice, AIInsight, Customer, PaymentPlan, FollowUp, BankTransaction } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
@@ -34,6 +34,39 @@ export async function fetchMockAccountingData(provider: string): Promise<Partial
     });
     return JSON.parse(response.text || "[]");
   } catch (error) {
+    return [];
+  }
+}
+
+export async function fetchMockBankData(bankName: string): Promise<BankTransaction[]> {
+  try {
+    const prompt = `Generate 5 realistic bank transaction records for a business bank account at ${bankName}. 
+    Include transaction date, description (use realistic Indian banking terms like NEFT, RTGS, IMPS, UPI, or CHQ), and amount. 
+    Status should be 'SUGGESTED' for most, or 'UNMATCHED'.`;
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING },
+              date: { type: Type.STRING },
+              description: { type: Type.STRING },
+              amount: { type: Type.NUMBER },
+              status: { type: Type.STRING, enum: ['UNMATCHED', 'SUGGESTED', 'RECONCILED'] }
+            },
+            required: ["id", "date", "description", "amount", "status"]
+          }
+        }
+      }
+    });
+    return JSON.parse(response.text || "[]");
+  } catch (error) {
+    console.error("Error fetching bank data:", error);
     return [];
   }
 }
@@ -96,7 +129,7 @@ export async function generateReminderAudio(customerName: string, amount: number
       model: "gemini-2.5-flash-preview-tts",
       contents: [{ parts: [{ text: speechText }] }],
       config: {
-        responseModalities: [Modality.AUDIO],
+        responseModalalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
             prebuiltVoiceConfig: { voiceName: tone === 'firm' ? 'Puck' : 'Kore' },

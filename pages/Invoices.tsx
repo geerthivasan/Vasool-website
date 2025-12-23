@@ -1,10 +1,10 @@
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Invoice, Customer } from '../types';
 import { toast } from 'react-hot-toast';
 import { extractInvoiceFromText } from '../services/gemini';
 import { PROVIDERS, AccountingProvider, connectProvider, syncProviderData, isProviderConnected } from '../services/accounting';
-import { getEffectiveStatus, calculateEscalationLevel, getEscalationColor } from '../services/finance';
+import { getEffectiveStatus, calculateEscalationLevel, getEscalationColor, calculateDynamicRisk } from '../services/finance';
 import { useApp } from '../App';
 import * as XLSX from 'xlsx';
 
@@ -19,15 +19,74 @@ const Invoices: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [lastSync, setLastSync] = useState<string>(localStorage.getItem(`vasool_last_sync_${user?.id}`) || 'Never synced');
   
+  // OAuth Simulation State
+  const [oauthModal, setOauthModal] = useState<{ provider: any; step: 'LOGIN' | 'CONSENT' | 'REDIRECT' } | null>(null);
+  const [oauthLoading, setOauthLoading] = useState(false);
+
   const [extractedInvoices, setExtractedInvoices] = useState<Partial<Invoice>[]>([]);
   const [currentSyncSource, setCurrentSyncSource] = useState<string | null>(null);
   
+  const [newInvoiceData, setNewInvoiceData] = useState({
+    customerName: '',
+    amount: '',
+    dueDate: new Date().toISOString().split('T')[0]
+  });
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const filteredInvoices = invoices.filter(inv => {
     const eff = getEffectiveStatus(inv);
     return filter === 'ALL' || eff === filter;
   });
+
+  const handleManualAdd = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newInvoiceData.customerName || !newInvoiceData.amount) {
+      toast.error("Please fill in all required fields.");
+      return;
+    }
+
+    const amountNum = parseFloat(newInvoiceData.amount);
+    const newInvoice: Invoice = {
+      id: `INV-${Math.floor(Math.random() * 10000)}`,
+      customerName: newInvoiceData.customerName,
+      amount: amountNum,
+      balance: amountNum,
+      currency: 'INR',
+      dueDate: newInvoiceData.dueDate,
+      status: 'PENDING',
+      isEmailed: false,
+      probabilityOfPayment: 0.8,
+      escalationLevel: 0,
+      manualLogs: [],
+      source: 'MANUAL'
+    };
+
+    newInvoice.escalationLevel = calculateEscalationLevel(newInvoice, escalationProtocol);
+    setInvoices(prev => [newInvoice, ...prev]);
+    
+    // Ensure customer exists
+    const existingCust = customers.find(c => c.name.toLowerCase() === newInvoice.customerName.toLowerCase());
+    if (!existingCust) {
+      setCustomers(prev => [...prev, {
+        id: `CUST-${Math.random().toString(36).substr(2, 4).toUpperCase()}`,
+        name: newInvoice.customerName,
+        contactPerson: '',
+        email: 'N/A',
+        phone: 'N/A',
+        totalOutstanding: amountNum,
+        riskLevel: 'low',
+        lastFollowUp: 'Never',
+        currentEscalation: newInvoice.escalationLevel,
+        aiEnabled: true,
+        stageContacts: {}
+      }]);
+    }
+
+    setShowAddModal(false);
+    setNewInvoiceData({ customerName: '', amount: '', dueDate: new Date().toISOString().split('T')[0] });
+    toast.success("Invoice added successfully.");
+  };
 
   const updateGlobalLedger = (newRecords: Partial<Invoice>[], source?: any) => {
     const finalInvoiceRecords: Invoice[] = [];
@@ -92,33 +151,51 @@ const Invoices: React.FC = () => {
     return { added: 0, skipped: duplicateCount };
   };
 
-  const handleProviderAction = async (provider: AccountingProvider) => {
-    if (isProviderConnected(provider)) handleSync(provider);
-    else {
-      setIsSyncing(true);
-      toast.loading(`Authenticating with ${provider}...`, { id: 'auth-toast' });
-      const success = await connectProvider(provider);
-      setIsSyncing(false);
-      if (success) {
-        toast.success(`${provider} Connected!`, { id: 'auth-toast' });
-        handleSync(provider);
-      }
+  const handleProviderAction = async (provider: any) => {
+    if (isProviderConnected(provider.id)) {
+      handleSync(provider.id);
+    } else {
+      setOauthModal({ provider, step: 'LOGIN' });
     }
   };
 
-  const handleSync = async (provider: AccountingProvider) => {
+  const startOAuthFlow = async () => {
+    if (!oauthModal) return;
+    setOauthLoading(true);
+    await new Promise(r => setTimeout(r, 1200));
+    setOauthModal({ ...oauthModal, step: 'CONSENT' });
+    setOauthLoading(false);
+  };
+
+  const authorizeOAuth = async () => {
+    if (!oauthModal) return;
+    setOauthLoading(true);
+    await new Promise(r => setTimeout(r, 1500));
+    setOauthModal({ ...oauthModal, step: 'REDIRECT' });
+    
+    // Simulate callback
+    await new Promise(r => setTimeout(r, 800));
+    await connectProvider(oauthModal.provider.id);
+    const provId = oauthModal.provider.id;
+    setOauthModal(null);
+    setOauthLoading(false);
+    toast.success(`${provId} Connected successfully!`);
+    handleSync(provId);
+  };
+
+  const handleSync = async (providerId: AccountingProvider) => {
     setIsSyncing(true);
-    setCurrentSyncSource(provider.toUpperCase());
-    toast.loading(`Fetching ledgers from ${provider}...`, { id: 'sync-toast' });
+    setCurrentSyncSource(providerId.toUpperCase());
+    const toastId = toast.loading(`Synchronizing ${providerId} cloud data...`);
     try {
-      const data = await syncProviderData(provider);
+      const data = await syncProviderData(providerId);
       setExtractedInvoices(data);
-      toast.success(`Found ${data.length} records in ${provider}. Review before committing.`, { id: 'sync-toast' });
-      const syncTime = `Synced with ${provider} on ${new Date().toLocaleTimeString()}`;
+      toast.success(`Fetched ${data.length} records. Committing to staging...`, { id: toastId });
+      const syncTime = `Synced with ${providerId} on ${new Date().toLocaleTimeString()}`;
       setLastSync(syncTime);
       localStorage.setItem(`vasool_last_sync_${user?.id}`, syncTime);
     } catch (err) {
-      toast.error(`Failed to sync with ${provider}.`, { id: 'sync-toast' });
+      toast.error(`Failed to sync with ${providerId}.`, { id: toastId });
     } finally {
       setIsSyncing(false);
     }
@@ -141,7 +218,6 @@ const Invoices: React.FC = () => {
       const wb = await workbookPromise;
       const jsonData = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
       
-      // Limit to first 100 rows for AI efficiency
       const dataToProcess = jsonData.slice(0, 100);
       const dataArray = await extractInvoiceFromText(JSON.stringify(dataToProcess, null, 2));
       
@@ -166,7 +242,7 @@ const Invoices: React.FC = () => {
       toast.success(`Imported ${result.added} records successfully!`);
       if (result.skipped > 0) toast(`Skipped ${result.skipped} duplicate entries.`, { icon: 'ℹ️' });
     } else {
-      toast.error(result.skipped > 0 ? "All entries in this file already exist in your ledger." : "No new records to add.");
+      toast.error(result.skipped > 0 ? "All entries already exist in your ledger." : "No records added.");
     }
     setExtractedInvoices([]);
     setCurrentSyncSource(null);
@@ -211,8 +287,8 @@ const Invoices: React.FC = () => {
           <table className="w-full text-left">
             <thead className="bg-slate-50/50 text-[10px] font-black uppercase text-slate-400 tracking-widest">
               <tr>
-                <th className="px-8 py-5">Escalation</th>
-                <th className="px-8 py-5">Entity & Source</th>
+                <th className="px-8 py-5">Escalation Stage</th>
+                <th className="px-8 py-5">Partner & Risk</th>
                 <th className="px-8 py-5">Amount</th>
                 <th className="px-8 py-5">Expected On</th>
                 <th className="px-8 py-5">Status</th>
@@ -223,18 +299,41 @@ const Invoices: React.FC = () => {
               {filteredInvoices.map(inv => {
                 const esc = calculateEscalationLevel(inv, escalationProtocol);
                 const effStatus = getEffectiveStatus(inv);
+                
+                // Calculate risk based on matrix settings
+                const overdueDays = effStatus === 'OVERDUE' 
+                    ? Math.floor((new Date().getTime() - new Date(inv.dueDate).getTime()) / (1000 * 60 * 60 * 24)) 
+                    : 0;
+                const risk = calculateDynamicRisk(inv.balance || inv.amount, overdueDays, escalationProtocol);
+
                 return (
                   <tr key={inv.id} className="hover:bg-slate-50/50 transition-colors group">
                     <td className="px-8 py-5">
-                       <div className="flex gap-1 items-center">
-                         {[1,2,3,4,5].map(step => (
-                           <div key={step} className={`h-1.5 w-3 rounded-full transition-all ${step <= esc ? getEscalationColor(step as any) : 'bg-slate-100'}`}></div>
-                         ))}
+                       <div className="flex flex-col gap-1.5">
+                         <div className="flex gap-1 items-center">
+                           {[1,2,3,4,5].map(step => (
+                             <div key={step} className={`h-1.5 w-3 rounded-full transition-all ${step <= esc ? getEscalationColor(step as any) : 'bg-slate-100'}`}></div>
+                           ))}
+                         </div>
+                         <span className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">
+                            {esc === 0 ? 'Upcoming' : `Stage ${esc}`}
+                         </span>
                        </div>
                     </td>
                     <td className="px-8 py-5">
-                      <p className="text-sm font-bold text-slate-900">{inv.customerName}</p>
-                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{inv.source}</span>
+                      <div className="flex flex-col">
+                        <p className="text-sm font-bold text-slate-900">{inv.customerName}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">{inv.source || 'MANUAL'}</span>
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase border ${
+                            risk === 'high' ? 'text-red-600 border-red-100 bg-red-50' :
+                            risk === 'medium' ? 'text-amber-600 border-amber-100 bg-amber-50' :
+                            'text-emerald-600 border-emerald-100 bg-emerald-50'
+                          }`}>
+                            {risk} risk
+                          </span>
+                        </div>
+                      </div>
                     </td>
                     <td className="px-8 py-5 text-sm text-slate-900 font-black">₹{inv.amount.toLocaleString()}</td>
                     <td className="px-8 py-5 text-xs text-slate-500 font-medium">{new Date(inv.dueDate).toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'})}</td>
@@ -259,9 +358,40 @@ const Invoices: React.FC = () => {
           <div className="flex flex-col items-center justify-center h-[400px] text-center p-8 bg-slate-50/30">
             <div className="h-20 w-20 bg-white rounded-3xl shadow-sm border border-slate-100 flex items-center justify-center mb-6"><i className="fa-solid fa-vault text-3xl text-slate-200"></i></div>
             <h3 className="text-xl font-black text-slate-900">Your Ledger is Empty</h3>
+            <button onClick={() => setShowAddModal(true)} className="mt-4 text-indigo-600 font-black text-[10px] uppercase tracking-widest">Create First Invoice</button>
           </div>
         )}
       </div>
+
+      {/* Manual Add Invoice Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-md z-[150] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-md p-10 space-y-8 animate-in zoom-in-95 duration-200">
+             <div className="text-center">
+                <h3 className="text-2xl font-black text-slate-900">New Invoice Record</h3>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Manual Entry to Ledger</p>
+             </div>
+             <form onSubmit={handleManualAdd} className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Customer Name</label>
+                  <input required type="text" value={newInvoiceData.customerName} onChange={(e) => setNewInvoiceData({...newInvoiceData, customerName: e.target.value})} className="w-full px-5 py-3 border border-slate-100 rounded-xl bg-slate-50 text-sm font-bold focus:ring-4 focus:ring-indigo-50 outline-none" placeholder="e.g. Acme Corp" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Amount (INR)</label>
+                  <input required type="number" value={newInvoiceData.amount} onChange={(e) => setNewInvoiceData({...newInvoiceData, amount: e.target.value})} className="w-full px-5 py-3 border border-slate-100 rounded-xl bg-slate-50 text-sm font-bold focus:ring-4 focus:ring-indigo-50 outline-none" placeholder="0.00" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Due Date</label>
+                  <input required type="date" value={newInvoiceData.dueDate} onChange={(e) => setNewInvoiceData({...newInvoiceData, dueDate: e.target.value})} className="w-full px-5 py-3 border border-slate-100 rounded-xl bg-slate-50 text-sm font-bold focus:ring-4 focus:ring-indigo-50 outline-none" />
+                </div>
+                <div className="flex gap-4 pt-4">
+                  <button type="button" onClick={() => setShowAddModal(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Discard</button>
+                  <button type="submit" className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100">Commit Record</button>
+                </div>
+             </form>
+          </div>
+        </div>
+      )}
 
       {showManualLogModal && (
         <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-md z-[100] flex items-center justify-center p-4">
@@ -338,7 +468,7 @@ const Invoices: React.FC = () => {
                 <div className="space-y-8">
                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                      {PROVIDERS.map(p => (
-                       <button key={p.id} onClick={() => handleProviderAction(p.id)} className={`flex flex-col items-center gap-3 p-5 border rounded-3xl transition-all group ${isProviderConnected(p.id) ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-slate-100 hover:border-indigo-200'}`}>
+                       <button key={p.id} onClick={() => handleProviderAction(p)} className={`flex flex-col items-center gap-3 p-5 border rounded-3xl transition-all group ${isProviderConnected(p.id) ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-slate-100 hover:border-indigo-200'}`}>
                          <div className={`h-12 w-12 bg-white rounded-2xl flex items-center justify-center shadow-sm ${p.color} group-hover:scale-110 transition-transform`}><i className={`fa-solid ${p.icon} text-xl`}></i></div>
                          <span className="text-[9px] font-black text-slate-500 uppercase">{p.id}</span>
                        </button>
@@ -381,6 +511,101 @@ const Invoices: React.FC = () => {
                    </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OAuth Handshake Simulation Modal */}
+      {oauthModal && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xl z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-lg overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className={`p-10 ${oauthModal.provider.color.replace('text-', 'bg-')} text-white flex justify-between items-center`}>
+               <div className="flex items-center gap-4">
+                  <div className="h-12 w-12 bg-white/20 rounded-xl flex items-center justify-center text-2xl">
+                    <i className={`fa-solid ${oauthModal.provider.icon}`}></i>
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black">{oauthModal.provider.name} Auth</h3>
+                    <p className="text-white/60 text-[10px] uppercase font-bold tracking-widest">OAuth 2.0 Secure Connection</p>
+                  </div>
+               </div>
+               <button onClick={() => setOauthModal(null)} className="opacity-50 hover:opacity-100"><i className="fa-solid fa-xmark text-2xl"></i></button>
+            </div>
+
+            <div className="p-10 space-y-8">
+               {oauthModal.step === 'LOGIN' && (
+                 <div className="space-y-6 animate-in slide-in-from-bottom-4">
+                    <div className="text-center">
+                       <h4 className="text-xl font-black text-slate-900">Sign in to {oauthModal.provider.name}</h4>
+                       <p className="text-xs text-slate-500 mt-2">Vasool is requesting access to your accounting ledgers.</p>
+                    </div>
+                    <div className="space-y-4">
+                       <input readOnly type="text" value={user?.email} className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold text-slate-400" />
+                       <input type="password" placeholder="Password" defaultValue="••••••••••••" className="w-full px-5 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:ring-4 focus:ring-indigo-50 outline-none" />
+                    </div>
+                    <button 
+                      onClick={startOAuthFlow}
+                      disabled={oauthLoading}
+                      className={`w-full py-4 ${oauthModal.provider.color.replace('text-', 'bg-')} text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl flex items-center justify-center gap-2 transition-all hover:opacity-90`}
+                    >
+                      {oauthLoading ? <i className="fa-solid fa-spinner fa-spin"></i> : 'Log In & Continue'}
+                    </button>
+                 </div>
+               )}
+
+               {oauthModal.step === 'CONSENT' && (
+                 <div className="space-y-6 animate-in slide-in-from-right-4">
+                    <div className="flex items-center gap-4 bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
+                       <div className="h-14 w-14 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-xl shadow-lg shadow-indigo-100">
+                          <i className="fa-solid fa-bolt-lightning"></i>
+                       </div>
+                       <i className="fa-solid fa-right-left text-slate-300"></i>
+                       <div className={`h-14 w-14 ${oauthModal.provider.color.replace('text-', 'bg-')} rounded-2xl flex items-center justify-center text-white text-xl shadow-lg`}>
+                          <i className={`fa-solid ${oauthModal.provider.icon}`}></i>
+                       </div>
+                    </div>
+                    <div>
+                       <h4 className="text-lg font-black text-slate-900">Authorize Permissions</h4>
+                       <p className="text-xs text-slate-500 mt-1">Vasool will be able to perform the following:</p>
+                    </div>
+                    <ul className="space-y-3">
+                       {[
+                         `Read all Invoice records from ${oauthModal.provider.name}`,
+                         'Access Customer & Partner directory',
+                         'Retrieve Payment status and Bank reconciliations'
+                       ].map((item, i) => (
+                         <li key={i} className="flex gap-3 text-xs font-bold text-slate-600">
+                            <i className="fa-solid fa-check text-emerald-500 mt-0.5"></i>
+                            {item}
+                         </li>
+                       ))}
+                    </ul>
+                    <div className="flex gap-4 pt-4 border-t border-slate-50">
+                       <button onClick={() => setOauthModal(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Deny</button>
+                       <button 
+                         onClick={authorizeOAuth}
+                         disabled={oauthLoading}
+                         className="flex-2 px-8 py-4 bg-emerald-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-emerald-100 flex items-center justify-center gap-2"
+                       >
+                         {oauthLoading ? <i className="fa-solid fa-spinner fa-spin"></i> : 'Allow Access'}
+                       </button>
+                    </div>
+                 </div>
+               )}
+
+               {oauthModal.step === 'REDIRECT' && (
+                 <div className="py-12 text-center space-y-6 animate-in zoom-in-95">
+                    <div className="h-24 w-24 bg-slate-50 rounded-full flex items-center justify-center mx-auto relative">
+                       <i className="fa-solid fa-shield-check text-5xl text-emerald-500"></i>
+                       <div className="absolute inset-0 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+                    </div>
+                    <div>
+                       <h4 className="text-xl font-black text-slate-900">Success!</h4>
+                       <p className="text-xs text-slate-400 font-bold uppercase tracking-widest mt-1">Redirecting back to Vasool Hub...</p>
+                    </div>
+                 </div>
+               )}
             </div>
           </div>
         </div>

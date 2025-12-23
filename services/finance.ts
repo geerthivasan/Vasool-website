@@ -27,23 +27,37 @@ export const getEffectiveStatus = (invoice: Invoice): 'PAID' | 'OVERDUE' | 'PEND
   return 'PENDING';
 };
 
+/**
+ * Calculates the Escalation Level (0-5) based on the number of days since/until the due date,
+ * strictly following the Escalation Matrix thresholds.
+ */
 export const calculateEscalationLevel = (invoice: Invoice, protocol: EscalationProtocol = DEFAULT_PROTOCOL): EscalationLevel => {
   if (invoice.status === 'PAID') return EscalationLevel.LEVEL_0;
+  
   const dueDate = new Date(invoice.dueDate);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const diffTime = today.getTime() - dueDate.getTime();
   const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
+  // Stage 1: Friendly Nudge (Pre-due window)
+  if (diffDays <= 0 && diffDays >= -protocol.level1Days) return EscalationLevel.LEVEL_1;
+  
+  // Future invoices not yet in nudge range
   if (diffDays < -protocol.level1Days) return EscalationLevel.LEVEL_0;
-  if (diffDays >= -protocol.level1Days && diffDays <= 0) return EscalationLevel.LEVEL_1;
-  if (diffDays >= 1 && diffDays <= (protocol.level2Days)) return EscalationLevel.LEVEL_2;
-  if (diffDays > (protocol.level2Days) && diffDays <= (protocol.level3Days)) return EscalationLevel.LEVEL_3;
-  if (diffDays > (protocol.level3Days) && diffDays <= (protocol.level4Days)) return EscalationLevel.LEVEL_4;
-  if (diffDays > (protocol.level4Days)) return EscalationLevel.LEVEL_5;
+
+  // Overdue stages (diffDays > 0)
+  if (diffDays > 0 && diffDays <= protocol.level2Days) return EscalationLevel.LEVEL_2;
+  if (diffDays > protocol.level2Days && diffDays <= protocol.level3Days) return EscalationLevel.LEVEL_3;
+  if (diffDays > protocol.level3Days && diffDays <= protocol.level4Days) return EscalationLevel.LEVEL_4;
+  if (diffDays > protocol.level4Days) return EscalationLevel.LEVEL_5;
+
   return EscalationLevel.LEVEL_0;
 };
 
+/**
+ * Categorizes an invoice/customer into a Risk Bucket based on the Risk Matrix thresholds.
+ */
 export const calculateDynamicRisk = (totalOutstanding: number, maxOverdueDays: number, protocol: EscalationProtocol): 'low' | 'medium' | 'high' => {
   if (totalOutstanding >= protocol.riskHighAmount || maxOverdueDays >= protocol.riskHighDays) return 'high';
   if (totalOutstanding >= protocol.riskMediumAmount || maxOverdueDays >= protocol.riskMediumDays) return 'medium';

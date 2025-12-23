@@ -1,10 +1,10 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { FollowUp, Customer, EscalationLevel, PaymentPlan, EscalationProtocol, CommChannel, StageContact, Invoice } from '../types';
 import { toast } from 'react-hot-toast';
 import { useApp } from '../App';
 import { generateReminderAudio, generateReminderText, generatePaymentPlan, analyzeCustomerResponse } from '../services/gemini';
-import { calculateEscalationLevel, getEscalationColor, getEffectiveStatus, getLevelChannel } from '../services/finance';
+import { calculateEscalationLevel, getEscalationColor, getEffectiveStatus, getLevelChannel, DEFAULT_PROTOCOL } from '../services/finance';
 
 type FollowUpTab = 'pipeline' | 'activity' | 'matrix';
 
@@ -31,7 +31,15 @@ const FollowUps: React.FC = () => {
   const [paymentType, setPaymentType] = useState<'FULL' | 'PARTIAL'>('FULL');
   const [partialAmount, setPartialAmount] = useState<number>(0);
 
+  // Matrix Configuration Local State
   const [tempProtocol, setTempProtocol] = useState<EscalationProtocol>(escalationProtocol);
+
+  // Sync temp state when protocol changes or tab switches to Matrix
+  useEffect(() => {
+    if (activeTab === 'matrix') {
+      setTempProtocol(escalationProtocol);
+    }
+  }, [activeTab, escalationProtocol]);
 
   const suggestedReminders = useMemo(() => {
     const uniqueNames = Array.from(new Set([
@@ -82,15 +90,13 @@ const FollowUps: React.FC = () => {
 
     setComposingChannel(channel);
     
-    // Identify the best contact for this specific escalation level
     const stageContact: StageContact | undefined = remindTarget.customer.stageContacts?.[remindTarget.level];
     const contactName = stageContact?.name || remindTarget.customer.contactPerson || remindTarget.customer.name;
     const contactDetail = (channel === 'EMAIL') 
       ? (stageContact?.email || remindTarget.customer.email)
       : (stageContact?.phone || remindTarget.customer.phone);
 
-    // Requirement: Check if contact info is available
-    if (!contactDetail || contactDetail === 'N/A') {
+    if (!contactDetail || contactDetail === 'N/A' || contactDetail === '') {
       setRecipientContact({ name: contactName, detail: '' });
       setFixData({ 
         email: remindTarget.customer.email === 'N/A' ? '' : remindTarget.customer.email, 
@@ -135,7 +141,6 @@ const FollowUps: React.FC = () => {
       return;
     }
 
-    // Update global customer state
     setCustomers(prev => prev.map(c => c.id === remindTarget.customer.id ? {
       ...c,
       email: fixData.email || c.email,
@@ -148,7 +153,6 @@ const FollowUps: React.FC = () => {
     
     const contactName = recipientContact?.name || remindTarget.customer.name;
     generateAiDraft(composingChannel!, contactName);
-    toast.success("Contact details updated locally.");
   };
 
   const finalizeReminder = () => {
@@ -225,19 +229,54 @@ const FollowUps: React.FC = () => {
     setPartialAmount(0);
   };
 
+  const saveMatrix = () => {
+    setEscalationProtocol(tempProtocol);
+    toast.success("Recovery protocols committed to database.");
+  };
+
+  const resetMatrix = () => {
+    if (confirm("Reset protocols to system defaults?")) {
+      setTempProtocol(DEFAULT_PROTOCOL);
+      setEscalationProtocol(DEFAULT_PROTOCOL);
+      toast.success("Protocols reset.");
+    }
+  };
+
+  const toggleChannel = (lvlKey: string, channel: CommChannel) => {
+    const currentChannels = (tempProtocol as any)[lvlKey] as CommChannel[];
+    const isSelected = currentChannels.includes(channel);
+    const newChannels = isSelected 
+        ? currentChannels.filter(c => c !== channel) 
+        : [...currentChannels, channel];
+    
+    if (newChannels.length === 0) {
+        toast.error("At least one channel must be selected.");
+        return;
+    }
+
+    setTempProtocol({ ...tempProtocol, [lvlKey]: newChannels });
+  };
+
+  const getChannelIcon = (type: CommChannel) => {
+    switch(type) {
+      case 'WHATSAPP': return 'fa-brands fa-whatsapp';
+      case 'EMAIL': return 'fa-solid fa-envelope';
+      case 'SMS': return 'fa-solid fa-comment-dots';
+      case 'CALL': return 'fa-solid fa-phone-volume';
+      default: return 'fa-solid fa-paper-plane';
+    }
+  };
+
   const captureResponse = async () => {
     if (!showResponseModal || !responseInput) return;
-    
-    const toastId = toast.loading("AI analyzing partner response...");
+    const toastId = toast.loading("AI analyzing reply...");
     const suggestion = await analyzeCustomerResponse(responseInput);
-    
     setActivityLog(prev => prev.map(log => 
       log.id === showResponseModal.id 
         ? { ...log, status: 'REPLIED', customerResponse: responseInput, aiSuggestedNextStep: suggestion } 
         : log
     ));
-    
-    toast.success("Response analyzed.", { id: toastId });
+    toast.success("Analysis complete.", { id: toastId });
     setShowResponseModal(null);
     setResponseInput('');
   };
@@ -261,7 +300,8 @@ const FollowUps: React.FC = () => {
     }
   };
 
-  const simulateVoiceCall = async () => {
+  const simulateVoiceCall = async (e: React.MouseEvent) => {
+    e.preventDefault();
     if (!remindTarget || !recipientContact) return;
     const tone = remindTarget.level >= 4 ? 'firm' : 'soft';
     setActiveCall({ customer: recipientContact.name, status: 'Simulating AI Voice Call...', tone });
@@ -289,21 +329,6 @@ const FollowUps: React.FC = () => {
     } else {
       setActiveCall(null);
       toast.error("Synthesis failed.");
-    }
-  };
-
-  const saveMatrix = () => {
-    setEscalationProtocol(tempProtocol);
-    toast.success("Protocols Updated.");
-  };
-
-  const getChannelIcon = (type: CommChannel) => {
-    switch(type) {
-      case 'WHATSAPP': return 'fa-brands fa-whatsapp';
-      case 'EMAIL': return 'fa-solid fa-envelope';
-      case 'SMS': return 'fa-solid fa-comment-dots';
-      case 'CALL': return 'fa-solid fa-phone-volume';
-      default: return 'fa-solid fa-paper-plane';
     }
   };
 
@@ -388,165 +413,6 @@ const FollowUps: React.FC = () => {
           </div>
         )}
 
-        {/* Remind Modal with Contact Fixer */}
-        {remindTarget && (
-          <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[200] flex items-center justify-center p-4">
-            <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-300">
-               <div className="p-8 border-b border-slate-100 bg-slate-900 text-white flex justify-between items-center">
-                  <div>
-                    <h3 className="text-2xl font-black">Manual Intervention</h3>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">
-                      {remindTarget.customer.name} • Stage {remindTarget.level} • ₹{remindTarget.amount.toLocaleString()}
-                    </p>
-                  </div>
-                  <button onClick={() => setRemindTarget(null)} className="text-slate-400 hover:text-white transition-colors">
-                    <i className="fa-solid fa-xmark text-2xl"></i>
-                  </button>
-               </div>
-
-               <div className="p-10 space-y-8">
-                  {showContactFix ? (
-                    <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-300 text-center">
-                      <div className="h-20 w-20 bg-amber-50 rounded-3xl flex items-center justify-center mx-auto text-amber-500 text-3xl">
-                        <i className="fa-solid fa-address-card"></i>
-                      </div>
-                      <div>
-                        <h4 className="text-xl font-black text-slate-900">Missing Contact Details</h4>
-                        <p className="text-xs text-slate-500 mt-2 font-medium">To send a {composingChannel} reminder, we need the partner's info.</p>
-                      </div>
-                      <div className="space-y-4">
-                        <input 
-                          type="email" 
-                          placeholder="Email Address" 
-                          value={fixData.email} 
-                          onChange={(e) => setFixData({...fixData, email: e.target.value})}
-                          className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:outline-none focus:ring-4 focus:ring-indigo-50"
-                        />
-                        <input 
-                          type="text" 
-                          placeholder="WhatsApp / Phone" 
-                          value={fixData.phone} 
-                          onChange={(e) => setFixData({...fixData, phone: e.target.value})}
-                          className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:outline-none focus:ring-4 focus:ring-indigo-50"
-                        />
-                      </div>
-                      <div className="flex gap-4">
-                        <button onClick={() => setComposingChannel(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Back</button>
-                        <button onClick={handleSaveFixData} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100">Update & Compose</button>
-                      </div>
-                    </div>
-                  ) : !composingChannel ? (
-                    <div className="space-y-6">
-                      <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest text-center">Select Channel</p>
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                         {['WHATSAPP', 'EMAIL', 'SMS', 'CALL'].map(ch => (
-                           <button 
-                            key={ch}
-                            onClick={() => handleChannelSelect(ch as CommChannel)}
-                            className="flex flex-col items-center gap-3 p-6 rounded-3xl border border-slate-100 hover:border-indigo-600 hover:bg-indigo-50/50 transition-all group"
-                           >
-                              <div className={`h-12 w-12 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-600 text-xl group-hover:bg-indigo-600 group-hover:text-white transition-all`}>
-                                <i className={getChannelIcon(ch as CommChannel)}></i>
-                              </div>
-                              <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest">{ch}</span>
-                           </button>
-                         ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-6 animate-in slide-in-from-right-4">
-                      <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                        <div className="flex items-center gap-3">
-                          <i className={getChannelIcon(composingChannel)}></i>
-                          <div>
-                            <p className="text-[11px] font-black text-slate-900 uppercase tracking-widest">{recipientContact?.name}</p>
-                            <p className="text-[9px] font-bold text-slate-400">{recipientContact?.detail}</p>
-                          </div>
-                        </div>
-                        <button onClick={() => setComposingChannel(null)} className="text-[8px] font-black text-indigo-600 uppercase">Change</button>
-                      </div>
-
-                      {isComposing ? (
-                        <div className="h-48 flex flex-col items-center justify-center space-y-4 bg-slate-50 rounded-3xl border border-slate-100">
-                          <i className="fa-solid fa-sparkles fa-spin text-indigo-600 text-3xl"></i>
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] animate-pulse">Gemini Drafting Notice...</p>
-                        </div>
-                      ) : (
-                        <div className="space-y-6">
-                          <textarea 
-                            value={validationDraft}
-                            onChange={(e) => setValidationDraft(e.target.value)}
-                            className="w-full h-48 p-6 bg-slate-50 border border-slate-100 rounded-3xl text-sm font-medium leading-relaxed resize-none focus:ring-4 focus:ring-indigo-100 outline-none"
-                          />
-                          <div className="flex gap-4">
-                            <button onClick={() => setRemindTarget(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Discard</button>
-                            {composingChannel === 'CALL' ? (
-                              <button onClick={simulateVoiceCall} className="flex-2 px-8 py-4 bg-rose-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl flex items-center justify-center gap-2"><i className="fa-solid fa-robot"></i> Test Script</button>
-                            ) : (
-                              <button onClick={finalizeReminder} className="flex-2 px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100">Send Now</button>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-               </div>
-            </div>
-          </div>
-        )}
-
-        {/* Mark Payment Modal */}
-        {paymentTarget && (
-          <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[200] flex items-center justify-center p-4">
-            <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-md p-10 space-y-8 animate-in zoom-in-95 duration-200">
-               <div className="text-center">
-                  <div className="h-16 w-16 bg-emerald-50 rounded-3xl flex items-center justify-center mx-auto mb-4"><i className="fa-solid fa-money-check-dollar text-2xl text-emerald-600"></i></div>
-                  <h3 className="text-2xl font-black text-slate-900">Record Payment</h3>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Settling Ledger for {paymentTarget.customer.name}</p>
-               </div>
-
-               <div className="flex bg-slate-100 p-1.5 rounded-2xl border border-slate-100">
-                 <button 
-                  onClick={() => setPaymentType('FULL')}
-                  className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${paymentType === 'FULL' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
-                 >Full Settlement</button>
-                 <button 
-                  onClick={() => setPaymentType('PARTIAL')}
-                  className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${paymentType === 'PARTIAL' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
-                 >Partial Payment</button>
-               </div>
-
-               {paymentType === 'FULL' ? (
-                 <div className="bg-emerald-50 p-6 rounded-2xl border border-emerald-100 text-center">
-                   <p className="text-[10px] font-black text-emerald-600 uppercase mb-1">Settlement Amount</p>
-                   <p className="text-3xl font-black text-slate-900">₹{paymentTarget.amount.toLocaleString()}</p>
-                 </div>
-               ) : (
-                 <div className="space-y-4">
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Received Amount</label>
-                    <div className="relative">
-                      <span className="absolute left-5 top-1/2 -translate-y-1/2 font-black text-slate-400 text-lg">₹</span>
-                      <input 
-                        type="number" 
-                        value={partialAmount}
-                        onChange={(e) => setPartialAmount(Number(e.target.value))}
-                        className="w-full pl-10 pr-6 py-5 bg-slate-50 border border-slate-100 rounded-2xl font-black text-lg focus:outline-none focus:ring-4 focus:ring-emerald-50 text-emerald-600"
-                        placeholder="0.00"
-                      />
-                    </div>
-                    <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest text-center">Remaining Balance: ₹{(paymentTarget.amount - partialAmount).toLocaleString()}</p>
-                 </div>
-               )}
-
-               <div className="flex gap-4">
-                  <button onClick={() => setPaymentTarget(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Discard</button>
-                  <button onClick={handleMarkPayment} className="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-emerald-100">Confirm Receipt</button>
-               </div>
-            </div>
-          </div>
-        )}
-
-        {/* History Tab Rendering */}
         {activeTab === 'activity' && (
           <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden">
              <table className="w-full text-left">
@@ -581,8 +447,352 @@ const FollowUps: React.FC = () => {
           </div>
         )}
 
-        {/* Matrix Rendering Omitted for Brevity (unchanged) */}
+        {activeTab === 'matrix' && (
+          <div className="max-w-5xl mx-auto w-full animate-in slide-in-from-bottom-4 duration-500 space-y-12">
+            
+            {/* Escalation Matrix Section */}
+            <div className="bg-white rounded-[3rem] border border-slate-100 p-12 shadow-sm">
+                <div className="flex justify-between items-start mb-10">
+                    <div>
+                        <h3 className="text-3xl font-black text-slate-900">Escalation Matrix</h3>
+                        <p className="text-sm text-slate-500 font-medium mt-1">Define the automated logic for your recovery timeline.</p>
+                    </div>
+                    <button onClick={resetMatrix} className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-red-500 transition-colors">Reset to Default</button>
+                </div>
+
+                <div className="space-y-6">
+                    {[
+                        { id: 1, label: 'Stage 1: Friendly Nudge', daysKey: 'level1Days', chanKey: 'level1Channel' },
+                        { id: 2, label: 'Stage 2: Standard Reminder', daysKey: 'level2Days', chanKey: 'level2Channel' },
+                        { id: 3, label: 'Stage 3: Firm Warning', daysKey: 'level3Days', chanKey: 'level3Channel' },
+                        { id: 4, label: 'Stage 4: Management Escalation', daysKey: 'level4Days', chanKey: 'level4Channel' },
+                        { id: 5, label: 'Stage 5: Critical / AI Voice', daysKey: 'level5Days', chanKey: 'level5Channel' },
+                    ].map((stage) => (
+                        <div key={stage.id} className="grid grid-cols-1 md:grid-cols-12 gap-8 items-center p-8 bg-slate-50/50 rounded-[2.5rem] border border-slate-100 hover:bg-white hover:shadow-md transition-all">
+                            <div className="md:col-span-3 flex items-center gap-4">
+                                <div className={`h-10 w-10 rounded-xl flex items-center justify-center font-black text-white ${getEscalationColor(stage.id as any)}`}>
+                                    {stage.id}
+                                </div>
+                                <h4 className="text-[11px] font-black text-slate-900 uppercase tracking-widest leading-tight">{stage.label}</h4>
+                            </div>
+
+                            <div className="md:col-span-3">
+                                <label className="block text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Threshold Days</label>
+                                <div className="flex items-center gap-2">
+                                    <input 
+                                        type="number"
+                                        value={(tempProtocol as any)[stage.daysKey]}
+                                        onChange={(e) => setTempProtocol({ ...tempProtocol, [stage.daysKey]: parseInt(e.target.value) || 0 })}
+                                        className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-black text-sm text-indigo-600 focus:outline-none focus:ring-4 focus:ring-indigo-50"
+                                    />
+                                    <span className="text-[9px] font-black text-slate-300 uppercase">Days</span>
+                                </div>
+                            </div>
+
+                            <div className="md:col-span-6">
+                                <label className="block text-[8px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Preferred Channels</label>
+                                <div className="flex flex-wrap gap-2">
+                                    {['WHATSAPP', 'EMAIL', 'SMS', 'CALL'].map((ch) => {
+                                        const isSelected = ((tempProtocol as any)[stage.chanKey] as CommChannel[]).includes(ch as CommChannel);
+                                        return (
+                                            <button 
+                                                key={ch}
+                                                onClick={() => toggleChannel(stage.chanKey, ch as CommChannel)}
+                                                className={`px-3 py-1.5 rounded-lg text-[9px] font-black uppercase transition-all flex items-center gap-2 border ${
+                                                    isSelected ? 'bg-indigo-600 text-white border-indigo-600 shadow-lg' : 'bg-white text-slate-400 border-slate-200 hover:border-indigo-200'
+                                                }`}
+                                            >
+                                                <i className={getChannelIcon(ch as CommChannel)}></i> {ch}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Risk Assessment Matrix Section */}
+            <div className="bg-white rounded-[3rem] border border-slate-100 p-12 shadow-sm">
+                <div className="mb-10">
+                    <h3 className="text-3xl font-black text-slate-900">Risk Matrix</h3>
+                    <p className="text-sm text-slate-500 font-medium mt-1">Configure thresholds that categorize partners into risk buckets.</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    {/* High Risk Thresholds */}
+                    <div className="p-8 bg-red-50/50 rounded-[2.5rem] border border-red-100 space-y-6">
+                        <div className="flex items-center gap-4">
+                            <div className="h-10 w-10 bg-red-600 rounded-xl flex items-center justify-center text-white text-lg shadow-lg shadow-red-100">
+                                <i className="fa-solid fa-skull-crossbones"></i>
+                            </div>
+                            <h4 className="text-[11px] font-black text-red-700 uppercase tracking-widest">High Risk Thresholds</h4>
+                        </div>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-[8px] font-black text-red-400 uppercase tracking-widest mb-1.5 ml-1">Outstanding Amount (₹)</label>
+                                <input 
+                                    type="number"
+                                    value={tempProtocol.riskHighAmount}
+                                    onChange={(e) => setTempProtocol({ ...tempProtocol, riskHighAmount: parseInt(e.target.value) || 0 })}
+                                    className="w-full px-5 py-3 bg-white border border-red-200 rounded-xl font-black text-sm text-red-600 focus:outline-none focus:ring-4 focus:ring-red-100"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-[8px] font-black text-red-400 uppercase tracking-widest mb-1.5 ml-1">Overdue Period (Days)</label>
+                                <input 
+                                    type="number"
+                                    value={tempProtocol.riskHighDays}
+                                    onChange={(e) => setTempProtocol({ ...tempProtocol, riskHighDays: parseInt(e.target.value) || 0 })}
+                                    className="w-full px-5 py-3 bg-white border border-red-200 rounded-xl font-black text-sm text-red-600 focus:outline-none focus:ring-4 focus:ring-red-100"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Medium Risk Thresholds */}
+                    <div className="p-8 bg-amber-50/50 rounded-[2.5rem] border border-amber-100 space-y-6">
+                        <div className="flex items-center gap-4">
+                            <div className="h-10 w-10 bg-amber-500 rounded-xl flex items-center justify-center text-white text-lg shadow-lg shadow-amber-100">
+                                <i className="fa-solid fa-triangle-exclamation"></i>
+                            </div>
+                            <h4 className="text-[11px] font-black text-amber-700 uppercase tracking-widest">Medium Risk Thresholds</h4>
+                        </div>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-[8px] font-black text-amber-400 uppercase tracking-widest mb-1.5 ml-1">Outstanding Amount (₹)</label>
+                                <input 
+                                    type="number"
+                                    value={tempProtocol.riskMediumAmount}
+                                    onChange={(e) => setTempProtocol({ ...tempProtocol, riskMediumAmount: parseInt(e.target.value) || 0 })}
+                                    className="w-full px-5 py-3 bg-white border border-amber-200 rounded-xl font-black text-sm text-amber-600 focus:outline-none focus:ring-4 focus:ring-amber-100"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-[8px] font-black text-amber-400 uppercase tracking-widest mb-1.5 ml-1">Overdue Period (Days)</label>
+                                <input 
+                                    type="number"
+                                    value={tempProtocol.riskMediumDays}
+                                    onChange={(e) => setTempProtocol({ ...tempProtocol, riskMediumDays: parseInt(e.target.value) || 0 })}
+                                    className="w-full px-5 py-3 bg-white border border-amber-200 rounded-xl font-black text-sm text-amber-600 focus:outline-none focus:ring-4 focus:ring-amber-100"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="mt-12 pt-12 border-t border-slate-50 flex justify-end">
+                    <button 
+                        onClick={saveMatrix}
+                        className="w-full md:w-auto px-12 py-5 bg-slate-900 text-white rounded-[2rem] font-black uppercase tracking-[0.2em] text-[11px] shadow-2xl hover:bg-indigo-600 transition-all"
+                    >
+                        Commit Recovery Protocols
+                    </button>
+                </div>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Workflow Modals (Remind, Payment, Audio, etc.) remain fully functional */}
+      {remindTarget && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-300">
+             <div className="p-8 border-b border-slate-100 bg-slate-900 text-white flex justify-between items-center">
+                <div>
+                  <h3 className="text-2xl font-black">Manual Intervention</h3>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">
+                    {remindTarget.customer.name} • Stage {remindTarget.level} • ₹{remindTarget.amount.toLocaleString()}
+                  </p>
+                </div>
+                <button onClick={() => setRemindTarget(null)} className="text-slate-400 hover:text-white transition-colors">
+                  <i className="fa-solid fa-xmark text-2xl"></i>
+                </button>
+             </div>
+
+             <div className="p-10 space-y-8">
+                {showContactFix ? (
+                  <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-300 text-center">
+                    <div className="h-20 w-20 bg-amber-50 rounded-3xl flex items-center justify-center mx-auto text-amber-500 text-3xl">
+                      <i className="fa-solid fa-address-card"></i>
+                    </div>
+                    <div>
+                      <h4 className="text-xl font-black text-slate-900">Missing Contact Details</h4>
+                      <p className="text-xs text-slate-500 mt-2 font-medium">To send a {composingChannel} reminder, we need the partner's info.</p>
+                    </div>
+                    <div className="space-y-4">
+                      <input 
+                        type="email" 
+                        placeholder="Email Address" 
+                        value={fixData.email} 
+                        onChange={(e) => setFixData({...fixData, email: e.target.value})}
+                        className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:outline-none focus:ring-4 focus:ring-indigo-50"
+                      />
+                      <input 
+                        type="text" 
+                        placeholder="WhatsApp / Phone" 
+                        value={fixData.phone} 
+                        onChange={(e) => setFixData({...fixData, phone: e.target.value})}
+                        className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:outline-none focus:ring-4 focus:ring-indigo-50"
+                      />
+                    </div>
+                    <div className="flex gap-4">
+                      <button onClick={() => setComposingChannel(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Back</button>
+                      <button onClick={handleSaveFixData} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100">Update & Compose</button>
+                    </div>
+                  </div>
+                ) : !composingChannel ? (
+                  <div className="space-y-6">
+                    <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest text-center">Select Channel</p>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                       {['WHATSAPP', 'EMAIL', 'SMS', 'CALL'].map(ch => (
+                         <button 
+                          key={ch}
+                          onClick={() => handleChannelSelect(ch as CommChannel)}
+                          className="flex flex-col items-center gap-3 p-6 rounded-3xl border border-slate-100 hover:border-indigo-600 hover:bg-indigo-50/50 transition-all group"
+                         >
+                            <div className={`h-12 w-12 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-600 text-xl group-hover:bg-indigo-600 group-hover:text-white transition-all`}>
+                              <i className={getChannelIcon(ch as CommChannel)}></i>
+                            </div>
+                            <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest">{ch}</span>
+                         </button>
+                       ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-6 animate-in slide-in-from-right-4">
+                    <div className="flex items-center justify-between bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                      <div className="flex items-center gap-3">
+                        <i className={getChannelIcon(composingChannel)}></i>
+                        <div>
+                          <p className="text-[11px] font-black text-slate-900 uppercase tracking-widest">{recipientContact?.name}</p>
+                          <p className="text-[9px] font-bold text-slate-400">{recipientContact?.detail}</p>
+                        </div>
+                      </div>
+                      <button onClick={() => setComposingChannel(null)} className="text-[8px] font-black text-indigo-600 uppercase">Change</button>
+                    </div>
+
+                    {isComposing ? (
+                      <div className="h-48 flex flex-col items-center justify-center space-y-4 bg-slate-50 rounded-3xl border border-slate-100">
+                        <i className="fa-solid fa-sparkles fa-spin text-indigo-600 text-3xl"></i>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] animate-pulse">Gemini Drafting Notice...</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-6">
+                        <textarea 
+                          value={validationDraft}
+                          onChange={(e) => setValidationDraft(e.target.value)}
+                          className="w-full h-48 p-6 bg-slate-50 border border-slate-100 rounded-3xl text-sm font-medium leading-relaxed resize-none focus:ring-4 focus:ring-indigo-100 outline-none"
+                        />
+                        <div className="flex gap-4">
+                          <button onClick={() => setRemindTarget(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Discard</button>
+                          {composingChannel === 'CALL' ? (
+                            <button onClick={simulateVoiceCall} className="flex-2 px-8 py-4 bg-rose-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl flex items-center justify-center gap-2"><i className="fa-solid fa-robot"></i> Test Script</button>
+                          ) : (
+                            <button onClick={finalizeReminder} className="flex-2 px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100">Send Now</button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+             </div>
+          </div>
+        </div>
+      )}
+
+      {paymentTarget && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-md p-10 space-y-8 animate-in zoom-in-95 duration-200">
+             <div className="text-center">
+                <div className="h-16 w-16 bg-emerald-50 rounded-3xl flex items-center justify-center mx-auto mb-4"><i className="fa-solid fa-money-check-dollar text-2xl text-emerald-600"></i></div>
+                <h3 className="text-2xl font-black text-slate-900">Record Payment</h3>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Settling Ledger for {paymentTarget.customer.name}</p>
+             </div>
+
+             <div className="flex bg-slate-100 p-1.5 rounded-2xl border border-slate-100">
+               <button 
+                onClick={() => setPaymentType('FULL')}
+                className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${paymentType === 'FULL' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
+               >Full Settlement</button>
+               <button 
+                onClick={() => setPaymentType('PARTIAL')}
+                className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${paymentType === 'PARTIAL' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
+               >Partial Payment</button>
+             </div>
+
+             {paymentType === 'FULL' ? (
+               <div className="bg-emerald-50 p-6 rounded-2xl border border-emerald-100 text-center">
+                 <p className="text-[10px] font-black text-emerald-600 uppercase mb-1">Settlement Amount</p>
+                 <p className="text-3xl font-black text-slate-900">₹{paymentTarget.amount.toLocaleString()}</p>
+               </div>
+             ) : (
+               <div className="space-y-4">
+                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Received Amount</label>
+                  <div className="relative">
+                    <span className="absolute left-5 top-1/2 -translate-y-1/2 font-black text-slate-400 text-lg">₹</span>
+                    <input 
+                      type="number" 
+                      value={partialAmount}
+                      onChange={(e) => setPartialAmount(Number(e.target.value))}
+                      className="w-full pl-10 pr-6 py-5 bg-slate-50 border border-slate-100 rounded-2xl font-black text-lg focus:outline-none focus:ring-4 focus:ring-emerald-50 text-emerald-600"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest text-center">Remaining Balance: ₹{(paymentTarget.amount - partialAmount).toLocaleString()}</p>
+               </div>
+             )}
+
+             <div className="flex gap-4">
+                <button onClick={() => setPaymentTarget(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Discard</button>
+                <button onClick={handleMarkPayment} className="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-emerald-100">Confirm Receipt</button>
+             </div>
+          </div>
+        </div>
+      )}
+
+      {showResponseModal && (
+        <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-md z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-md p-10 space-y-8 animate-in zoom-in-95 duration-300">
+             <div className="text-center">
+                <div className="h-16 w-16 bg-indigo-100 rounded-3xl flex items-center justify-center mx-auto mb-4"><i className="fa-solid fa-reply text-2xl text-indigo-600"></i></div>
+                <h3 className="text-2xl font-black text-slate-900">Partner Feedback</h3>
+             </div>
+             <textarea 
+                value={responseInput}
+                onChange={(e) => setResponseInput(e.target.value)}
+                placeholder="What was the partner's feedback?"
+                className="w-full h-32 p-5 bg-slate-50 border border-slate-100 rounded-[2rem] text-sm font-medium outline-none focus:ring-4 focus:ring-indigo-50"
+             />
+             <div className="flex gap-4">
+                <button onClick={() => setShowResponseModal(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Discard</button>
+                <button onClick={captureResponse} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-indigo-100">AI Analysis</button>
+             </div>
+          </div>
+        </div>
+      )}
+
+      {selectedPlan && (
+        <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-md z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-lg p-10 space-y-8 animate-in zoom-in-95 duration-300">
+            <h3 className="text-3xl font-black text-slate-900 tracking-tight">Recovery Schedule</h3>
+            <p className="text-xs text-slate-600 italic leading-relaxed bg-slate-50 p-6 rounded-2xl border border-slate-100">"{selectedPlan.plan.reasoning}"</p>
+            <div className="space-y-3">
+              {selectedPlan.plan.installments.map((inst, i) => (
+                <div key={i} className="p-4 border border-slate-100 rounded-2xl flex justify-between items-center bg-white shadow-sm">
+                  <span className="text-sm font-black text-slate-900">₹{inst.amount.toLocaleString()} ({inst.percentage}%)</span>
+                  <span className="text-[10px] font-black text-slate-400 uppercase">{inst.dueDate}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-4">
+              <button onClick={() => setSelectedPlan(null)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-[10px] uppercase tracking-widest">Close</button>
+              <button onClick={() => {toast.success("Shared via WhatsApp!"); setSelectedPlan(null);}} className="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-xl shadow-emerald-100">Share with Partner</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {activeCall && (
         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-3xl z-[300] flex items-center justify-center p-6">
