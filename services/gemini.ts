@@ -108,12 +108,27 @@ export async function generatePaymentPlan(amount: number, customerName: string):
 
 export async function generateReminderText(channel: string, customer: string, amount: number, tone: string): Promise<string> {
   try {
-    const prompt = `Generate a ${tone} reminder for ${customer} for ${amount} INR via ${channel}. Include a placeholder [PAYMENT_LINK] at the end.`;
+    // Highly specific prompt to prevent chatty responses
+    const prompt = `
+    Act as a professional collections automation system. 
+    Write exactly ONE single reminder message for a customer named "${customer}" who owes ${amount} INR.
+    
+    Channel: ${channel}
+    Tone: ${tone}
+    
+    Constraints:
+    1. Output ONLY the raw message body. Do not include "Here is a draft", "Subject:", or quotation marks.
+    2. Do NOT provide multiple options. Decide on the single best message based on the tone.
+    3. Include a placeholder [PAYMENT_LINK] at the end.
+    4. If the channel is WhatsApp or SMS, keep it concise.
+    5. If the channel is Email, include a standard greeting and sign-off.
+    `;
+    
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: prompt,
     });
-    return response.text || "Reminder regarding your invoice.";
+    return response.text?.trim() || "Reminder regarding your invoice.";
   } catch (error) {
     return "Reminder regarding your invoice.";
   }

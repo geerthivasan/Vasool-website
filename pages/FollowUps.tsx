@@ -30,6 +30,9 @@ const FollowUps: React.FC = () => {
   const [recipientContact, setRecipientContact] = useState<{ name: string; detail: string } | null>(null);
   const [showContactFix, setShowContactFix] = useState(false);
   const [fixData, setFixData] = useState({ email: '', phone: '' });
+  
+  // New Tone State
+  const [selectedTone, setSelectedTone] = useState<string>('Firm & Professional');
 
   // Payment Tracking State
   const [paymentTarget, setPaymentTarget] = useState<any>(null);
@@ -113,6 +116,17 @@ const FollowUps: React.FC = () => {
     setValidationDraft('');
     setRecipientContact(null);
     setShowContactFix(false);
+
+    // AI Decision: Default Tone based on Stage/Case
+    let defaultTone = 'Firm & Professional';
+    if (rem.level >= 4) {
+      defaultTone = 'Urgent & deadline-oriented';
+    } else if (rem.level === 3) {
+      defaultTone = 'Short & Serious';
+    } else {
+      defaultTone = 'Firm & Professional';
+    }
+    setSelectedTone(defaultTone);
   };
 
   const handleChannelSelect = async (channel: CommChannel) => {
@@ -137,27 +151,34 @@ const FollowUps: React.FC = () => {
     }
 
     setRecipientContact({ name: contactName, detail: contactDetail });
-    generateAiDraft(channel, contactName);
+    generateAiDraft(channel, contactName, selectedTone); // Use current tone
   };
 
-  const generateAiDraft = async (channel: CommChannel, contactName: string) => {
+  const generateAiDraft = async (channel: CommChannel, contactName: string, toneOverride?: string) => {
     setIsComposing(true);
-    const toastId = toast.loading(`AI Drafting ${channel} notice...`);
+    const toneToUse = toneOverride || selectedTone;
+    // const toastId = toast.loading(`Drafting (${toneToUse})...`);
     
     try {
-      const tone = remindTarget.level >= 4 ? 'Firm & Urgent' : (remindTarget.level >= 3 ? 'Professional' : 'Friendly');
-      let message = await generateReminderText(channel, contactName, remindTarget.amount, tone);
+      let message = await generateReminderText(channel, contactName, remindTarget.amount, toneToUse);
       
       const payLink = `https://vasool.in/pay/${remindTarget.customer.id.substring(0, 8)}`;
       message = message.replace('[PAYMENT_LINK]', payLink);
 
       setValidationDraft(message);
-      toast.dismiss(toastId);
+      // toast.dismiss(toastId);
     } catch (err) {
-      toast.error("Failed to compose draft.", { id: toastId });
+      toast.error("Failed to compose draft.");
       setComposingChannel(null);
     } finally {
       setIsComposing(false);
+    }
+  };
+
+  const handleToneChange = (newTone: string) => {
+    setSelectedTone(newTone);
+    if (composingChannel && recipientContact) {
+       generateAiDraft(composingChannel, recipientContact.name, newTone);
     }
   };
 
@@ -182,7 +203,7 @@ const FollowUps: React.FC = () => {
     setShowContactFix(false);
     
     const contactName = recipientContact?.name || remindTarget.customer.name;
-    generateAiDraft(composingChannel!, contactName);
+    generateAiDraft(composingChannel!, contactName, selectedTone);
   };
 
   const cleanPhone = (phone: string) => {
@@ -772,6 +793,31 @@ const FollowUps: React.FC = () => {
                         </div>
                       </div>
                       <button onClick={() => setComposingChannel(null)} className="text-[8px] font-black text-indigo-600 uppercase">Change</button>
+                    </div>
+
+                    {/* Tone Selector */}
+                    <div className="space-y-2">
+                       <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">AI Tone Selection</label>
+                       <div className="flex flex-col gap-2">
+                          {[
+                             'Firm & Professional',
+                             'Urgent & deadline-oriented',
+                             'Short & Serious'
+                          ].map(tone => (
+                             <button
+                                key={tone}
+                                onClick={() => handleToneChange(tone)}
+                                className={`w-full py-3 px-4 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all text-left flex justify-between items-center ${
+                                   selectedTone === tone 
+                                      ? 'bg-indigo-600 text-white shadow-md' 
+                                      : 'bg-slate-50 text-slate-500 border border-slate-100 hover:bg-slate-100'
+                                }`}
+                             >
+                                {tone}
+                                {selectedTone === tone && <i className="fa-solid fa-check"></i>}
+                             </button>
+                          ))}
+                       </div>
                     </div>
 
                     {isComposing ? (
